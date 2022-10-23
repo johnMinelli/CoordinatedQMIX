@@ -1,0 +1,8 @@
+torch
+matplotlib
+gym
+keras
+numpy
+pygame
+pandas
+path

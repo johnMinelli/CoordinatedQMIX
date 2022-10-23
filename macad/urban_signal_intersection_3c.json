@@ -1,0 +1,109 @@
+{
+    "scenarios":  {
+        "map": "Town03",
+        "actors": {
+            "car1": {
+                "start": [70, -132.8, 8],
+                "end": [127, -132, 8]
+            },
+            "car2": {
+                "start": [84.3, -118, 9],
+                "end": [120, -132, 8]
+            },
+            "car3": {
+                "start": [43, -133, 4],
+                "end": [100, -132, 8]
+            }
+        },
+        "weather_distribution": [0],
+        "max_steps": 499
+    },
+    "env": {
+        "server_map": "/Game/Carla/Maps/Town03",
+        "render": true,
+        "ignore_autonomous": false,
+        "render_x_res": 800,
+        "render_y_res": 600,
+        "x_res": 84,
+        "y_res": 84,
+        "framestack": 1,
+        "discrete_actions": true,
+        "squash_action_logits": false,
+        "verbose": false,
+        "use_depth_camera": false,
+        "send_measurements": false,
+        "enable_planner": true,
+        "spectator_loc": [
+            70,
+            -125,
+            9
+        ],
+        "sync_server": true,
+        "fixed_delta_seconds": 0.05
+    },
+    "actors": {
+        "car1": {
+            "type": "vehicle_4W",
+            "enable_planner": true,
+            "convert_images_to_video": false,
+            "early_terminate_on_collision": true,
+            "reward_function": "custom",
+            "manual_control": false,
+            "auto_control": false,
+            "camera_type": "rgb",
+            "collision_sensor": "on",
+            "lane_sensor": "on",
+            "log_images": false,
+            "log_measurements": false,
+            "render": true,
+            "render_x_res": 800,
+            "render_y_res": 600,
+            "x_res": 84,
+            "y_res": 84,
+            "use_depth_camera": false,
+            "send_measurements": false
+        },
+        "car2": {
+            "type": "vehicle_4W",
+            "enable_planner": true,
+            "convert_images_to_video": false,
+            "early_terminate_on_collision": true,
+            "reward_function": "custom",
+            "manual_control": false,
+            "auto_control": false,
+            "camera_type": "rgb",
+            "collision_sensor": "on",
+            "lane_sensor": "on",
+            "log_images": false,
+            "log_measurements": false,
+            "render": true,
+            "render_x_res": 800,
+            "render_y_res": 600,
+            "x_res": 84,
+            "y_res": 84,
+            "use_depth_camera": false,
+            "send_measurements": false
+        },
+        "car3": {
+            "type": "vehicle_4W",
+            "enable_planner": true,
+            "convert_images_to_video": false,
+            "early_terminate_on_collision": true,
+            "reward_function": "custom",
+            "manual_control": false,
+            "auto_control": false,
+            "camera_type": "rgb",
+            "collision_sensor": "on",
+            "lane_sensor": "on",
+            "log_images": false,
+            "log_measurements": false,
+            "render": true,
+            "render_x_res": 800,
+            "render_y_res": 600,
+            "x_res": 84,
+            "y_res": 84,
+            "use_depth_camera": false,
+            "send_measurements": false
+        }
+    }
+}
