@@ -56,13 +56,6 @@ class Policy(nn.Module):
     def is_recurrent(self):
         return self._recurrent
 
-    def to(self, device):
-        self.base.to(device)
-        self.a_dist.to(device)
-        self.c_dist.to(device)
-        super().to(device)
-        return self
-
     def forward(self, input, rnn_hxs, masks):
         raise NotImplementedError
 
@@ -81,8 +74,8 @@ class Policy(nn.Module):
             action = a_dist.sample()
             comm_mask = c_dist.sample()
         # cat the probabilities to hide complexity
-        log_probs = torch.stack([a_dist.log_probs(action), c_dist.log_probs(comm_mask)], 1).squeeze(-1)
-        output = torch.stack([action, comm_mask], 1).squeeze(-1)
+        log_probs = torch.cat([a_dist.log_probs(action), c_dist.log_probs(comm_mask)], 1)
+        output = torch.cat([action, comm_mask], 1)
 
         return output, log_probs, value, rnn_hxs
 
@@ -94,8 +87,8 @@ class Policy(nn.Module):
         a_dist = self.a_dist(actor_features)
         c_dist = self.c_dist(actor_features)
         # action and communication mask are handled together to hide complexity
-        actions, comm_mask = output.split(1, 1)
-        log_probs = torch.stack([a_dist.log_probs(actions), c_dist.log_probs(comm_mask)], 1).squeeze(-1)
+        actions, comm_mask = output.split(output.size(1)-1, 1)
+        log_probs = torch.cat([a_dist.log_probs(actions), c_dist.log_probs(comm_mask)], 1)
         dist_entropy = a_dist.entropy().mean() + c_dist.entropy().mean()
 
         return log_probs, value, dist_entropy, rnn_hxs
