@@ -86,35 +86,23 @@ class Logger(object):
         assert self.episode is not None, "You should call `episode_start` first."
         episode_time = time.time() - self.episode_start_time
         avg_time = episode_time / self.steps
+        tot_actors_reward = {"Tot_reward_"+k: r for k,r in total_reward.items()}
         avg_actors_reward = {"Avg_reward_"+k: r / self.steps for k,r in total_reward.items()}
+        tot_reward = np.mean(np.array(list(tot_actors_reward.values())))
         avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
         avg_reward_over_time = avg_reward / episode_time
         avg_losses = np.mean(list(self.total_losses.values()), 1) if len(self.total_losses) > 0 else []
 
         self.log('Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
-                 ' * Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
+                 ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
                  (' - Avg Losses : [' + ', '.join([str(l) for l in avg_losses]) + ']' if len(avg_losses)>0 else '') +
                  ' - Avg Time : {:.3f}'.format(avg_time))
-        self._log_stats_to_dashboards(self.total_steps, "Train", {**avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time})
+        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time})
 
         if self.progress_bar is not None:
             self.progress_bar.update(self.episode + 1)
             if self.episode + 1 == self.episodes:
                 self.progress_bar.finish()
-
-        # TODO considera additional logs
-        # writer.add_scalar('train/cum_reward_vs_steps', total_reward, total_steps)
-        # writer.add_scalar('train/cum_reward_vs_updates', total_reward, j+1)
-        # 
-        # if config.agent in ['a2c', 'acktr', 'ppo']:
-        #     writer.add_scalar('debug/value_loss_vs_steps', value_loss, total_steps)
-        #     writer.add_scalar('debug/value_loss_vs_updates', value_loss, j+1)
-        #     writer.add_scalar('debug/action_loss_vs_steps', action_loss, total_steps)
-        #     writer.add_scalar('debug/action_loss_vs_updates', action_loss, j+1)
-        #     writer.add_scalar('debug/dist_entropy_vs_steps', dist_entropy, total_steps)
-        #     writer.add_scalar('debug/dist_entropy_vs_updates', dist_entropy, j+1)
-        # 
-
 
         return avg_time, avg_losses, avg_reward
 

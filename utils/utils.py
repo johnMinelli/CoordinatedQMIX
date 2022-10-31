@@ -2,7 +2,7 @@
 from os import path, makedirs
 import random
 import numpy as np
-import tensorflow as tf
+import torch
 from torch.optim import lr_scheduler
 
 
@@ -11,9 +11,13 @@ def fix_random(seed: int):
     Args:
         seed: the seed to use.
     """
-    tf.random.set_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
 
 
 def mkdirs(paths):
