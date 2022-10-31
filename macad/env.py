@@ -1,5 +1,9 @@
-﻿import math
+﻿import logging
+import math
+import random
 import socket
+import sys
+import time
 import traceback
 
 import carla
@@ -11,10 +15,17 @@ from macad_gym.carla.multi_env import MultiCarlaEnv, DEFAULT_MULTIENV_CONFIG, DI
 from gym.spaces import Box, Discrete, Tuple, Dict
 import json
 from macad_gym.core.controllers.keyboard_control import KeyboardControl
+from macad_gym.core.sensors.utils import preprocess_image
 from macad_gym.viz.render import multi_view_render
 
 from macad.reward import CustomReward
+from macad.scenarios import CustomScenarios
 
+logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.WARNING)
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler(sys.stdout))
+
+Z_CUBE = 30
 
 def make_env(opt):
     configs = DEFAULT_MULTIENV_CONFIG
@@ -31,15 +42,31 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
 
         self.non_auto_actors = [k for k, v in self.configs["actors"].items() if not (v["auto_control"] or v["manual_control"])]
         self.auto_actors = [k for k, v in self.configs["actors"].items() if v["auto_control"] or v["manual_control"]]
-        if len(self.auto_actors) != 0: print("Warning: Be aware that the environment will output observation also for actors with autopilot. If this is not a wanted behaviour set `ignore_autonomous` in environment config file.")
+        if len(self.auto_actors) != 0: logger.warning("Warning: Be aware that the environment will output observation also for actors with autopilot. If this is not a wanted behaviour set `ignore_autonomous` in environment config file.")
         self.auto_filter = lambda dict_obj: dict(filter(lambda a: a[0] not in self.auto_actors, dict_obj.items()))
+        self._previous_comm_value = {}
 
+        self.exclude_hard_vehicles = True  # Remove hard vehicles due to problems of camera position
+        self._x_res = self._y_res = 84  # Match the img_obs with agents resized observation set in json config
         self._image_space = Box(-1.0, 1.0, shape=(3, self._x_res, self._y_res))
-        self.observation_space = Dict({actor_id: Dict({"img": self._image_space, "msr": Box(-10.0, 10.0, shape=(16,))}) for actor_id in self._actor_configs.keys()})
-        self._cmpt_reward = CustomReward()
+        # Set custom observation space
+        self.observation_space = Dict({actor_id: Dict({"img": self._image_space, "msr": Box(-10.0, 10.0, shape=(15,))})
+                                       for actor_id in self._actor_configs.keys()})
+        # Set custom functionalities classes
+        self._reward_policy = CustomReward()
+        self._scenario_config = CustomScenarios.resolve_scenarios_parameter(self.configs["scenarios"])
 
     def reset(self):
+        # Random pick another scenario
+        prev_s = self._scenario_map
         obs_dict = super().reset()
+        # Move the spectator camera in the area
+        if prev_s != self._scenario_map:
+            spectator = self.world.get_spectator()
+            x = np.mean([a["start"][0] for a in self._scenario_map["actors"].values()])
+            y = np.mean([a["start"][1] for a in self._scenario_map["actors"].values()])
+            spectator.set_transform(carla.Transform(carla.Location(x, y, 50), carla.Rotation(yaw=-90, pitch=-90)))
+
         f = self.auto_filter
         return f(obs_dict) if self._env_config["ignore_autonomous"] else obs_dict
 
@@ -59,7 +86,10 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
         return target_location_rel_x.item(), target_location_rel_y.item()
 
     def _encode_obs(self, actor_id, image, py_measurements):
-        # image = cv2.resize(image, (self.h, self.w))
+
+        config = self._actor_configs[actor_id]
+        image = preprocess_image(image, config)
+
         image = np.transpose(image, (2, 0, 1))
         target_rel_x, target_rel_y = self._get_relative_location_target(py_measurements["x"], py_measurements["y"], py_measurements["yaw"], self._end_pos[actor_id][0], self._end_pos[actor_id][1])
         target_rel_norm = np.linalg.norm(np.array([target_rel_x, target_rel_y]))
@@ -75,8 +105,7 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
             py_measurements["collision_pedestrians"],
             py_measurements["collision_other"],
             py_measurements["intersection_otherlane"],
-            py_measurements["intersection_offroad"],
-            py_measurements["intersection_otherlane"]] + \
+            py_measurements["intersection_offroad"]] + \
             one_hot_command
         )
 
@@ -84,15 +113,14 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
         return obs
 
     def _decode_obs(self, actor_id, obs):
-        return np.transpose(obs["img"], (1, 2, 0))
+        img = np.transpose(obs["img"], (1, 2, 0))
+        return img.swapaxes(0, 1) * 128 + 128
 
-    def step(self, action_dict):
-        """"""
-        if (not self._server_process) or (not self._client): raise RuntimeError("Cannot call step(...) before calling reset()")
-        assert len( self._actors), ("No actors exist in the environment. Either the environment was not properly initialized using`reset()` or all the actors have exited. Cannot execute `step()`")
-        if not isinstance(action_dict, dict): raise ValueError("`step(action_dict)` expected dict of actions. Got {}".format(type(action_dict)))
-        # Make sure the action_dict contains actions only for actors that exist in the environment
-        if not set(action_dict).issubset(set(self._actors)): raise ValueError("Cannot execute actions for non-existent actors. Received unexpected actor ids:{}".format(set(action_dict).difference(set(self._actors))))
+    def step(self, action_dict, comm_dict):
+        """Complete override of step function"""
+        self._previous_comm_value = comm_dict
+        # get spectator position
+        x_cam, y_cam, z_cam = (lambda l: (l.x, l.y, l.z))(self.world.get_spectator().get_location())
 
         try:
             obs_dict = {}
@@ -103,51 +131,37 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
                 obs, reward, done, info = self._step(actor_id, action)
                 obs_dict[actor_id] = obs
                 reward_dict[actor_id] = reward
-                self._done_dict[actor_id] = done
-                if done:
-                    self._dones.add(actor_id)
+                if not self._done_dict.get(actor_id, False):
+                    self._done_dict[actor_id] = done
                 info_dict[actor_id] = info
-            self._done_dict["__all__"] = len(self._dones) == len(self._actors)
-
-            # Find if any actor's config has render=True & render only for that actor. NOTE: with async server stepping, enabling rendering affects the step time & therefore MAX_STEPS needs adjustments
+            self._done_dict["__all__"] = sum(self._done_dict.values()) >= len(self._actors)
             render_required = [k for k, v in self._actor_configs.items() if v.get("render", False)]
             if render_required:
-                # reformat the observations
-                multi_view_render({k: self._decode_obs(k, v) for k, v in obs_dict.items()}, [self._x_res, self._y_res], self._actor_configs)
+                images = {}
+                for k, v in obs_dict.items():
+                    # self._path_trackers[k].draw()
+                    im = self._decode_obs(k, v)
+                    if comm_dict[k]:  # render a green circle
+                        x_act, y_act, _ = (lambda l: (l.x, l.y, l.z))(self._actors[k].get_location())
+                        x_cube_persp = ((abs(x_cam-x_act)/2)*z_cam)/Z_CUBE
+                        x_cube = x_cube_persp+x_cam if (x_cube_persp + x_cam) - x_act < (x_cube_persp - x_cam) - x_act else x_cube_persp-x_cam
+                        y_cube_persp = ((abs(y_cam-y_act)/2)*z_cam)/Z_CUBE
+                        y_cube = y_cube_persp+y_cam if (y_cube_persp + y_cam) - y_act < (y_cube_persp - y_cam) - y_act else y_cube_persp-y_cam
+                        self.world.debug.draw_point(carla.Location(x_cube, y_cube, Z_CUBE), 0.20, life_time=0.2, color=carla.Color(0, 255, 0))
+                        im[(np.arange(im.shape[0])[np.newaxis, :] - 16) ** 2 + (np.arange(im.shape[1])[:, np.newaxis] - 16) ** 2 < 4 ** 2] = [0,255,0]
+                    images.update({k: im})
+                multi_view_render(images, [400, 300], self._actor_configs)
 
             f = self.auto_filter
-            return (f(obs_dict), f(reward_dict), f(self._done_dict), f(info_dict)) if self._env_config["ignore_autonomous"] else obs_dict, reward_dict, self._done_dict, info_dict
-
+            return (f(obs_dict), f(reward_dict), f(self._done_dict), f(info_dict)) if self._env_config[
+                "ignore_autonomous"] else obs_dict, reward_dict, self._done_dict, info_dict
         except Exception:
-            print("Error during step, terminating episode early.", traceback.format_exc())
+            print("Error during step, terminating episode early.",
+                  traceback.format_exc())
             self._clear_server_state()
 
     def get_actors_loc(self):
-        return {k: np.array([v.get_location().x, v.get_location().y, v.get_location().z]) for k, v in self._actors.items() if k in self.non_auto_actors}
-
-    @staticmethod
-    def _get_tcp_port(port=9000):
-        s = socket.socket()
-        s.bind(("", port))  # Request the sys to provide a free port dynamically
-        server_port = s.getsockname()[1]
-        s.close()
-        return server_port
-    # image_size_net_chans = (160, 90, 3)
-
-
-def process_image(queue):
-    """
-    Get the image from the buffer and process it. It's the state for vision-based systems
-    """
-    image = queue.get()
-    array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
-    array = np.reshape(array, (image.height, image.width, 4))
-    array = array[:, :, :3]
-    array = array[:, :, ::-1]
-    image = Image.fromarray(array).convert('L')  # grayscale conversion
-    image = np.array(image.resize((84, 84)))  # convert to numpy array
-    image = np.reshape(image, (84, 84, 1))  # reshape image
-    return image
+        return {k: np.array([v.get_location().x, v.get_location().y, v.get_location().z]) for k, v in self._actors.items() if not self._env_config["ignore_autonomous"] or k in self.non_auto_actors }
 
 
 # If instead you want to predict 5 separata values
@@ -182,27 +196,3 @@ def vehicle_control_to_action(vehicle_control, is_discrete):
         return closest_action
 
     return continuous_action
-
-
-def compute_reward(vehicle, sensors):#, collision_sensor, lane_sensor):
-    max_speed = 14
-    min_speed = 2
-    speed = vehicle.get_velocity()
-    vehicle_speed = np.linalg.norm([speed.x, speed.y, speed.z])
-
-    speed_reward = (abs(vehicle_speed) - min_speed) / (max_speed - min_speed)
-    lane_reward = 0
-
-    if (vehicle_speed > max_speed) or (vehicle_speed < min_speed):
-        speed_reward = -0.05
-
-    if sensors.lane_crossed:
-        if sensors.lane_crossed_type == "'Broken'" or sensors.lane_crossed_type == "'NONE'":
-            lane_reward = -0.5
-            sensors.lane_crossed = False
-
-    if sensors.collision_flag:
-        return -1
-
-    else:
-        return speed_reward + lane_reward
