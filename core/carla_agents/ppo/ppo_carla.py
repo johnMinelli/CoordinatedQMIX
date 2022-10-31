@@ -31,8 +31,7 @@ class PPOCarla(object):
 
         # Setup modules
         self.model = Policy(env.observation_space, env.action_space, recurrent=True, base_kwargs=self.model_params).to(self.device)
-        self._init_buffer = lambda: RolloutStorage(self.opt.rollout_size, self.n_actors, self.env.observation_space, self.env.action_space, self.model_params["recurrent_input_size"]).to(self.device)
-        self.buffer = None  # late init
+        self.buffer = RolloutStorage(self.opt.rollout_size, self.n_actors, self.env.observation_space, self.env.action_space, self.model_params["recurrent_input_size"]).to(self.device)
 
         # Load or init
         if not opt.isTrain or opt.continue_train is not None:
@@ -40,8 +39,8 @@ class PPOCarla(object):
                 self.start_epoch = self.load_model(self.backup_dir, "policy", opt.continue_train)
             else:
                 self.load_model(opt.models_path, "policy", opt.model_epoch)
-        else: pass
-            # init_weights(self.model, init_type=opt.init_type)
+        # else:
+        #     init_weights(self.model, init_type="normal")
 
         if opt.isTrain:
             self.model.train()
@@ -113,11 +112,7 @@ class PPOCarla(object):
         elif current_state_obs is not None: [self.buffer.obs[key][step].copy_(current_state_obs[key]) for key in current_state_obs]
         else: self.buffer.value_preds[step].copy_(state_value)
 
-    def reset_buffer(self):
-        if self.buffer is not None: del self.buffer
-        self.buffer = self._init_buffer()
-
-    def update(self):
+    def update(self, valid_steps):
         self.buffer.compute_returns(self.use_gae, self.adv_gamma, self.adv_lambda)
 
         advantages = self.buffer.returns[:-1] - self.buffer.value_preds[:-1]
@@ -129,19 +124,19 @@ class PPOCarla(object):
         n_samples = len(advantages)
         for e in range(self.K_epochs):
             if self.model.is_recurrent:
-                data_generator = self.buffer.recurrent_generator(advantages, self.n_actors)
+                data_generator = self.buffer.recurrent_generator(advantages, self.n_actors, n_steps=valid_steps+1)
             else:
-                data_generator = self.buffer.feed_forward_generator(advantages, self.batch_size)
+                data_generator = self.buffer.feed_forward_generator(advantages, self.batch_size, n_steps=valid_steps+1)
 
             for sample in data_generator:
                 obs_batch, recurrent_hidden_states_batch, comm_batch, masks_batch, outputs_batch, value_preds_batch, return_batch, old_log_probs_batch, advantages_tgt = sample
                 log_probs, values, dist_entropy, _ = self.model.evaluate_actions(obs_batch['img'], obs_batch['msr'], recurrent_hidden_states_batch, comm_batch, masks_batch, outputs_batch)
-                action_loss, value_loss = self.ppo_clipped_loss(old_log_probs_batch, log_probs, advantages_tgt, values, return_batch, value_preds_batch)  # TODO destack probabilities
+                action_loss, value_loss = self.ppo_clipped_loss(old_log_probs_batch, log_probs, advantages_tgt, values, return_batch, value_preds_batch)
 
                 self.optimizer_G.zero_grad()
                 loss = action_loss + (value_loss * self.value_loss_coef) - (dist_entropy * self.entropy_coef)
                 loss.backward()
-                # nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                 self.optimizer_G.step()
 
                 action_loss_epoch += action_loss.item()
@@ -155,7 +150,7 @@ class PPOCarla(object):
         losses = {"value_loss": value_loss_epoch, "action_loss": action_loss_epoch, "dist_entropy": dist_entropy_epoch}
 
         # Reinitialize buffer
-        self.buffer.drain()
+        self.buffer.drain(last_step=valid_steps+1)
 
         return losses
 

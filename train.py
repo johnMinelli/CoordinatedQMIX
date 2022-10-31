@@ -65,6 +65,10 @@ def main():
             actor2agent[actor_id] = agent
         # play_loop_multi(args, actor2agent, agent, logger)
 
+            # t = world.player.get_transform()
+            # vehicles = world.world.get_actors().filter('vehicle.*')
+            # distance = lambda l: math.sqrt((l.x - t.location.x)**2 + (l.y - t.location.y)**2 + (l.z - t.location.z)**2)
+            # vehicles = [(distance(x.get_location()), x) for x in vehicles if x.id != world.player.id]
 
 def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True):
     """
@@ -96,22 +100,13 @@ def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True)
 
 
 def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logger):
-    # User input controls: for safe-panic exit in case of GAI
-    # def register_input():
-    #     for event in pygame.event.get():
-    #         if event.type == pygame.QUIT:
-    #             return False
-    #     return True
-
     actors_id = env.non_auto_actors
-    stop = False
 
     for episode in range(opt.episodes):
         for retry in range(5):
             try: current_state_obs = env.reset(); break
             except: time.sleep(0.1)  # retry
         if retry == 5: raise Exception("Multiple failures resetting the environment")
-        agent.reset_buffer()
 
         # setup starting input
         current_state_obs, recurrent_hidden_states, communication_vector, termination_masks = preprocess(current_state_obs, env.get_actors_loc(), agent.buffer.recurrent_hidden_states[0], torch.zeros_like(agent.buffer.masks[0]), agent.buffer.masks[0])
@@ -122,7 +117,7 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
         done = {"__all__": False}
 
         # cycle until end of episode
-        while not done["__all__"] and not stop:
+        while not done["__all__"]:
             # fill rollout and update for n times during an episode depending on the siwwze of rollout storage
             for step in range(opt.rollout_size):
                 # if multi_agent:
@@ -131,11 +126,12 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
                 # else:
                 with torch.no_grad():
                     output, log_prob, state_value, next_recurrent_hidden_states = agent.take_action(current_state_obs, recurrent_hidden_states, communication_vector, termination_masks)
-                if opt.force_comm: output[:,-1] = 0
-                actions, comm_mask = output.split(1, 1)  # just for sake of readability split the output
+                if opt.force_comm: output[:,-1] = 1
+                actions, comm_mask = output.split(output.size(1)-1, 1)  # just for sake of readability split the output
 
                 try:
-                    next_state_obs, reward, done, info = env.step({id: action.detach().cpu().numpy() for id, action in zip(actors_id, actions)})  # the env takes both actions and who communicate
+                    next_state_obs, reward, done, info = env.step({id: action.detach().cpu().numpy() for id, action in zip(actors_id, actions)},
+                                                                  {id: comm_value.detach().cpu().numpy() for id, comm_value in zip(actors_id, comm_mask)})  # the env takes both actions and who communicate
                 except Exception as e: print('Failed env step: ' + str(e)); exit()
 
                 for id in actors_id: total_rewards[id] += reward[id]
@@ -147,8 +143,7 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
                 # preprocess new state
                 current_state_obs, recurrent_hidden_states, communication_vector, termination_masks = preprocess(next_state_obs, env.get_actors_loc(), next_recurrent_hidden_states, comm_mask, termination_masks)
 
-                stop = False  # not register_input()
-                if done["__all__"] or stop:
+                if done["__all__"]:
                     break
 
             # make the update with data collected (ignore if it is just last step)
@@ -158,9 +153,10 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
                     state_value = agent.get_value(current_state_obs, recurrent_hidden_states, communication_vector, termination_masks)
                 agent.fill_buffer(state_value=state_value, step=step+1)
                 # update with batch of data collected
-                losses = agent.update()
+                losses = agent.update(valid_steps=step)
                 logger.train_step(step+1, losses, agent.schedulers[0].get_last_lr()[0])
-
+            else:  # be careful with that, you are throwing away last step, but also the reward of done
+                agent.buffer.drain(last_step=step+1)
         # optionally save models
         if episode != 0 and (episode % opt.agent_save_interval == 0):
             print(f'Saving agent at episode: {episode}.')
@@ -168,8 +164,6 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
 
         logger.episode_stop(total_rewards)
         agent.update_learning_rate()
-
-        if stop: break
 
         if episode != 0 and (episode % opt.agent_valid_interval == 0):
             # TODO maybe

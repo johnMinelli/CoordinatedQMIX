@@ -59,7 +59,7 @@ class RolloutStorage(object):
         self.masks = self.masks.to(device)
         return self
 
-    def insert(self, obs, recurrent_hidden_states, output, log_prob, value_preds, rewards, comm, mask):  # TODO communication_vector
+    def insert(self, obs, recurrent_hidden_states, output, log_prob, value_preds, rewards, comm, mask):
         for key in self.obs:
             self.obs[key][self.step + 1].copy_(obs[key])
         self.recurrent_hidden_states[self.step + 1].copy_(recurrent_hidden_states)
@@ -70,15 +70,13 @@ class RolloutStorage(object):
         self.comm_vectors[self.step + 1].copy_(comm)
         self.masks[self.step + 1].copy_(mask)
         self.step += 1
-        if self.step > self.n_steps:
-            print("mmmmmmm: is it last update?")  # NOTE that shouldn't be necessary
 
-    def drain(self):
+    def drain(self, last_step):
         for key in self.obs:
-            self.obs[key][0].copy_(self.obs[key][-1])
-        self.recurrent_hidden_states[0].copy_(self.recurrent_hidden_states[-1])
-        self.comm_vectors[0].copy_(self.comm_vectors[-1])
-        self.masks[0].copy_(self.masks[-1])
+            self.obs[key][0].copy_(self.obs[key][last_step])
+        self.recurrent_hidden_states[0].copy_(self.recurrent_hidden_states[last_step])
+        self.comm_vectors[0].copy_(self.comm_vectors[last_step])
+        self.masks[0].copy_(self.masks[last_step])
         self.step = 0
 
     def compute_returns(self, use_gae, gamma, lamb):
@@ -98,9 +96,9 @@ class RolloutStorage(object):
             for step in reversed(range(self.rewards.size(0))):
                 self.returns[step] = self.returns[step + 1] * gamma * self.masks[step + 1] + self.rewards[step]
 
-    def feed_forward_generator(self, advantages, mini_batch_size):
+    def feed_forward_generator(self, advantages, mini_batch_size, n_steps):
         n_samples, n_processes = self.rewards.size()[0:2]
-        batch_size = n_processes * n_samples
+        batch_size = n_processes * (n_samples - n_steps)  # TODO check
         sampler = BatchSampler(SubsetRandomSampler(range(batch_size)), mini_batch_size, drop_last=False)
         for indices in sampler:
             obs_batch = {}
@@ -117,7 +115,7 @@ class RolloutStorage(object):
 
             yield obs_batch, recurrent_hidden_states_batch, comm_batch, masks_batch, outputs_batch, value_preds_batch, return_batch, old_log_probs_batch, adv_targ
 
-    def recurrent_generator(self, advantages, mini_batch_size):
+    def recurrent_generator(self, advantages, mini_batch_size, n_steps):
         n_processes = self.rewards.size(1)
         assert n_processes >= mini_batch_size, ("PPO requires the number of processes ({}) to be greater than or equal to the number of PPO mini batches ({}).".format(n_processes, mini_batch_size))
         num_proc_per_batch = mini_batch_size
@@ -132,21 +130,21 @@ class RolloutStorage(object):
             comm_batch = []
             masks_batch = []
             old_log_probs_batch = []
-            adv_targ = []
+            adv_targ_batch = []
 
             for offset in range(num_proc_per_batch):
                 ind = perm[start_ind + offset]
-                for key in self.obs: obs_batch[key].append(self.obs[key][:-1, ind])  # self.n_steps-1
+                for key in self.obs: obs_batch[key].append(self.obs[key][:n_steps, ind])  # self.n_steps-1
                 recurrent_hidden_states_batch.append(self.recurrent_hidden_states[0:1, ind])
-                outputs_batch.append(self.outputs[:, ind])
-                value_preds_batch.append(self.value_preds[:-1, ind])
-                return_batch.append(self.returns[:-1, ind])
-                comm_batch.append(self.comm_vectors[:-1, ind])
-                masks_batch.append(self.masks[:-1, ind])
-                old_log_probs_batch.append(self.log_probs[:, ind])
-                adv_targ.append(advantages[:, ind])
+                outputs_batch.append(self.outputs[:n_steps, ind])  # self.n_steps
+                value_preds_batch.append(self.value_preds[:n_steps, ind])  # self.n_steps-1
+                return_batch.append(self.returns[:n_steps, ind])  # self.n_steps-1
+                comm_batch.append(self.comm_vectors[:n_steps, ind])  # self.n_steps-1
+                masks_batch.append(self.masks[:n_steps, ind])  # self.n_steps-1
+                old_log_probs_batch.append(self.log_probs[:n_steps, ind])  # self.n_steps
+                adv_targ_batch.append(advantages[:n_steps, ind])
 
-            T, N = self.n_steps, num_proc_per_batch
+            T, N = n_steps, num_proc_per_batch
             # These are all tensors of size (T, N, -1)
 
             outputs_batch = torch.stack(outputs_batch, 1)
@@ -155,7 +153,7 @@ class RolloutStorage(object):
             comm_batch = torch.stack(comm_batch, 1)
             masks_batch = torch.stack(masks_batch, 1)
             old_log_probs_batch = torch.stack(old_log_probs_batch, 1)
-            adv_targ = torch.stack(adv_targ, 1)
+            adv_targ_batch = torch.stack(adv_targ_batch, 1)
 
             # States is just a (N, -1) tensor
             for key in obs_batch:
@@ -171,6 +169,6 @@ class RolloutStorage(object):
             comm_batch = _flatten_helper(T, N, comm_batch)
             masks_batch = _flatten_helper(T, N, masks_batch)
             old_log_probs_batch = _flatten_helper(T, N, old_log_probs_batch)
-            adv_targ = _flatten_helper(T, N, adv_targ)
+            adv_targ_batch = _flatten_helper(T, N, adv_targ_batch)
 
-            yield obs_batch, recurrent_hidden_states_batch, comm_batch, masks_batch, outputs_batch, value_preds_batch, return_batch, old_log_probs_batch, adv_targ
+            yield obs_batch, recurrent_hidden_states_batch, comm_batch, masks_batch, outputs_batch, value_preds_batch, return_batch, old_log_probs_batch, adv_targ_batch
