@@ -25,26 +25,27 @@ logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.WARNING)
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
-Z_CUBE = 30
+N_ACTORS_ENV = 4
+Z_CUBE = 40
+
 
 def make_env(opt):
-    configs = DEFAULT_MULTIENV_CONFIG
-    configs["env"]["enable_planner"] = False
-    configs["env"]["discrete_actions"] = False
-    return UrbanSignalIntersection3Car()  # instead of the general class you can do a superclass down here
+    return NonSignalizedIntersection4Car()
 
-class UrbanSignalIntersection3Car(MultiCarlaEnv):
+
+class NonSignalizedIntersection4Car(MultiCarlaEnv):
     """A 4-way signalized intersection Multi-Agent Carla-Gym environment"""
     def __init__(self):
-        config_file = open("macad/urban_signal_intersection_3c.json")
+        config_file = open("macad/non_signalized_intersection_4c.json")
         self.configs = json.load(config_file)
-        super(UrbanSignalIntersection3Car, self).__init__(self.configs)
+        super(NonSignalizedIntersection4Car, self).__init__(self.configs)
 
         self.non_auto_actors = [k for k, v in self.configs["actors"].items() if not (v["auto_control"] or v["manual_control"])]
         self.auto_actors = [k for k, v in self.configs["actors"].items() if v["auto_control"] or v["manual_control"]]
         if len(self.auto_actors) != 0: logger.warning("Warning: Be aware that the environment will output observation also for actors with autopilot. If this is not a wanted behaviour set `ignore_autonomous` in environment config file.")
         self.auto_filter = lambda dict_obj: dict(filter(lambda a: a[0] not in self.auto_actors, dict_obj.items()))
         self._previous_comm_value = {}
+        self._zone = 0
 
         self.exclude_hard_vehicles = True  # Remove hard vehicles due to problems of camera position
         self._x_res = self._y_res = 84  # Match the img_obs with agents resized observation set in json config
@@ -65,10 +66,20 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
             spectator = self.world.get_spectator()
             x = np.mean([a["start"][0] for a in self._scenario_map["actors"].values()])
             y = np.mean([a["start"][1] for a in self._scenario_map["actors"].values()])
-            spectator.set_transform(carla.Transform(carla.Location(x, y, 50), carla.Rotation(yaw=-90, pitch=-90)))
+            spectator.set_transform(carla.Transform(carla.Location(x, y, 56), carla.Rotation(pitch=-90)))
 
         f = self.auto_filter
         return f(obs_dict) if self._env_config["ignore_autonomous"] else obs_dict
+
+    def _set_zone(self, value):
+        self._zone = value
+        # move spectator in zone of interest
+        spectator = self.world.get_spectator()
+        x = np.mean([a["start"][0] for a in list(self._scenario_map["actors"].values())[self._zone*N_ACTORS_ENV:self._zone*N_ACTORS_ENV+N_ACTORS_ENV]])
+        y = np.mean([a["start"][1] for a in list(self._scenario_map["actors"].values())[self._zone*N_ACTORS_ENV:self._zone*N_ACTORS_ENV+N_ACTORS_ENV]])
+        spectator.set_transform(carla.Transform(carla.Location(x, y, 56), carla.Rotation(pitch=-90)))
+        # flash the path in the spectator view
+        [self._path_trackers[k].draw() for k in list(self._actor_configs.keys())[self._zone*N_ACTORS_ENV:self._zone*N_ACTORS_ENV+N_ACTORS_ENV]]
 
     def _get_relative_location_target(self, loc_x, loc_y, loc_yaw, target_x, target_y):
 
@@ -116,17 +127,34 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
         img = np.transpose(obs["img"], (1, 2, 0))
         return img.swapaxes(0, 1) * 128 + 128
 
+    def _register_input(self):
+        if pygame.get_init():
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    print("Stop")
+                    self._clear_server_state()
+                    return
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_1:
+                        self._set_zone(0)
+                    if event.key == pygame.K_2:
+                        if len(self._actors) > N_ACTORS_ENV: self._set_zone(1)
+                    if event.key == pygame.K_3:
+                        if len(self._actors) > N_ACTORS_ENV*2: self._set_zone(2)
+
     def step(self, action_dict, comm_dict):
         """Complete override of step function"""
-        self._previous_comm_value = comm_dict
+        # ear the input
+        self._register_input()
         # get spectator position
         x_cam, y_cam, z_cam = (lambda l: (l.x, l.y, l.z))(self.world.get_spectator().get_location())
+        self._previous_comm_value = comm_dict
 
         try:
             obs_dict = {}
             reward_dict = {}
             info_dict = {}
-
+            # do step for each actor
             for actor_id, action in action_dict.items():
                 obs, reward, done, info = self._step(actor_id, action)
                 obs_dict[actor_id] = obs
@@ -135,19 +163,20 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
                     self._done_dict[actor_id] = done
                 info_dict[actor_id] = info
             self._done_dict["__all__"] = sum(self._done_dict.values()) >= len(self._actors)
+            # info drawing for debug
+            for k, v in list(obs_dict.items())[self._zone*N_ACTORS_ENV:self._zone*N_ACTORS_ENV+N_ACTORS_ENV]:
+                actor_coords = (lambda l: (l.x, l.y, l.z))(self._actors[k].get_location())
+                if comm_dict[k] and not self._done_dict[k]:  # render a green square in the spectator view
+                    self.world.debug.draw_point(self._cube_coords(x_cam, y_cam, z_cam, *actor_coords[:2], Z_CUBE), 0.15, life_time=0.2, color=carla.Color(0, 255, 0))
+                elif self._done_dict[k]:  # render a red square in the spectator view
+                    self.world.debug.draw_point(self._cube_coords(x_cam, y_cam, z_cam, *actor_coords[:2], Z_CUBE), 0.15, life_time=0.8, color=carla.Color(255, 0, 0))
             render_required = [k for k, v in self._actor_configs.items() if v.get("render", False)]
+            # view rendering for actors
             if render_required:
                 images = {}
-                for k, v in obs_dict.items():
-                    # self._path_trackers[k].draw()
+                for k, v in list(obs_dict.items())[self._zone*N_ACTORS_ENV:self._zone*N_ACTORS_ENV+N_ACTORS_ENV]:
                     im = self._decode_obs(k, v)
-                    if comm_dict[k]:  # render a green circle
-                        x_act, y_act, _ = (lambda l: (l.x, l.y, l.z))(self._actors[k].get_location())
-                        x_cube_persp = ((abs(x_cam-x_act)/2)*z_cam)/Z_CUBE
-                        x_cube = x_cube_persp+x_cam if (x_cube_persp + x_cam) - x_act < (x_cube_persp - x_cam) - x_act else x_cube_persp-x_cam
-                        y_cube_persp = ((abs(y_cam-y_act)/2)*z_cam)/Z_CUBE
-                        y_cube = y_cube_persp+y_cam if (y_cube_persp + y_cam) - y_act < (y_cube_persp - y_cam) - y_act else y_cube_persp-y_cam
-                        self.world.debug.draw_point(carla.Location(x_cube, y_cube, Z_CUBE), 0.20, life_time=0.2, color=carla.Color(0, 255, 0))
+                    if comm_dict[k] and not self._done_dict[k]:  # render a green circle in the view rendering
                         im[(np.arange(im.shape[0])[np.newaxis, :] - 16) ** 2 + (np.arange(im.shape[1])[:, np.newaxis] - 16) ** 2 < 4 ** 2] = [0,255,0]
                     images.update({k: im})
                 multi_view_render(images, [400, 300], self._actor_configs)
@@ -160,9 +189,15 @@ class UrbanSignalIntersection3Car(MultiCarlaEnv):
                   traceback.format_exc())
             self._clear_server_state()
 
+    def _cube_coords(self, x_cam, y_cam, z_cam, x_act, y_act, z):
+        x_cube_persp = (((abs(x_cam - x_act) / 2) * z_cam) / z)
+        x_cube = x_act + (x_cube_persp) if abs((x_act + x_cube_persp) - x_cam) < abs((x_act - x_cube_persp) - x_cam) else x_act - x_cube_persp
+        y_cube_persp = (((abs(y_cam - y_act) / 2) * z_cam) /z)
+        y_cube = y_act + y_cube_persp if abs((y_act + y_cube_persp) - y_cam) < abs((y_act - y_cube_persp) - y_cam) else y_act - y_cube_persp
+        return carla.Location(x_cube, y_cube, z)
+
     def get_actors_loc(self):
         return {k: np.array([v.get_location().x, v.get_location().y, v.get_location().z]) for k, v in self._actors.items() if not self._env_config["ignore_autonomous"] or k in self.non_auto_actors }
-
 
 # If instead you want to predict 5 separata values
 def vehicle_control_to_action(vehicle_control, is_discrete):

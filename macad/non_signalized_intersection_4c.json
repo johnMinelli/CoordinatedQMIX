@@ -1,5 +1,5 @@
 {
-    "scenarios":  ["SUI4C_TOWN3_C","SSUI4C_TOWN3_C","CTI4C_TOWN3_C"],
+    "scenarios":  "SSUI4C_TOWN3_C",
     "env": {
         "server_map": "/Game/Carla/Maps/Town03",
         "render": true,

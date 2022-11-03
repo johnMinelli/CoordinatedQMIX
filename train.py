@@ -81,17 +81,19 @@ def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True)
     for key in list(list(obs.values())[0].keys()):
         processed_obs[key] = torch.tensor(np.array([_obs[key] for _obs in obs.values()])).type_as(rnn_hxs)
     done_mask = done_mask.to(rnn_hxs.device)
+    eye_mask = torch.logical_not(torch.eye(rnn_hxs.size(0))).unsqueeze(-1).to(rnn_hxs.device)
     # construct the communication vector as sum of hidden vectors of others actors scaled by relative distance
     coords = torch.tensor(np.array(list(actors_coords.values()))).type_as(rnn_hxs)
     coords = coords.expand(coords.size(0), *coords.size())
     # torch.cdist(a, a.transpose(0, 1), p=2).T[0]
     l2_dist_coords = (torch.triu((coords - coords.transpose(0, 1)).pow(2).sum(2).sqrt()) + torch.tril(torch.ones_like(coords)[:,:,0])).unsqueeze(-1)  # put 1s in 0 pos to do division
-    rnn_hxs_scaled = torch.triu(rnn_hxs.expand(rnn_hxs.size(0), *rnn_hxs.size())) / l2_dist_coords
-    # mask with termination mask and predicted will of communicate (the receiver must hear)
-    mask = (done_mask * done_mask.T).unsqueeze(-1) * comm_mask.unsqueeze(-1)
+    distance_mask = (l2_dist_coords < 100)
+    rnn_hxs_scaled = torch.triu(rnn_hxs.expand(rnn_hxs.size(0), *rnn_hxs.size()).permute(2,0,1)).permute(1,2,0) * distance_mask * eye_mask / l2_dist_coords
+    # mask with termination mask and predicted will of communicate (the receiver must hear). Also remove 
+    mask = (done_mask * done_mask.T).unsqueeze(-1) * comm_mask.unsqueeze(-1) * (distance_mask * distance_mask.transpose(0, 1)) * eye_mask
     rnn_hxs_scaled_masked = rnn_hxs_scaled * mask
     if avg_comm:  # scale by number of contributing actors for network’s sake
-        actors_communicating = (mask.sum(0, keepdim=True) - 1).expand(*rnn_hxs_scaled_masked.size())  # remove itself by matrix summation
+        actors_communicating = (mask.sum(0, keepdim=True)).expand(*rnn_hxs_scaled_masked.size())
         div_mask = actors_communicating > 0
         rnn_hxs_scaled_masked[div_mask] = rnn_hxs_scaled_masked[div_mask] / actors_communicating[div_mask]
     comm = (rnn_hxs_scaled_masked + rnn_hxs_scaled_masked.transpose(0, 1)).sum(0)
