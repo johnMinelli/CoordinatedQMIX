@@ -35,7 +35,7 @@ class RolloutStorage(object):
         if action_space.__class__.__name__ == 'Discrete':
             self.outputs = torch.zeros(n_steps, n_processes, 1 + 1).long()  # actions + communication
         else:
-            self.outputs = torch.zeros(n_steps, n_processes, action_space.shape[0] + 1)  # TODO comm
+            self.outputs = torch.zeros(n_steps, n_processes, action_space.shape[0] + 1)
         self.comm_vectors = torch.zeros(n_steps + 1, n_processes, recurrent_hidden_state_size)
         self.masks = torch.ones(n_steps + 1, n_processes, 1)
 

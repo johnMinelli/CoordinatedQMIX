@@ -1,5 +1,6 @@
 import glob
 import itertools
+import datetime
 import os
 
 import torch
@@ -31,7 +32,8 @@ class PPOCarla(object):
 
         # Setup modules
         self.model = Policy(env.observation_space, env.action_space, recurrent=True, base_kwargs=self.model_params).to(self.device)
-        self.buffer = RolloutStorage(self.opt.rollout_size, self.n_actors, self.env.observation_space, self.env.action_space, self.model_params["recurrent_input_size"]).to(self.device)
+        self._init_buffer = lambda: RolloutStorage(self.opt.rollout_size, self.n_actors, self.env.observation_space, self.env.action_space, self.model_params["recurrent_input_size"]).to(self.device)
+        self.buffer = None  # late init
 
         # Load or init
         if not opt.isTrain or opt.continue_train is not None:
@@ -100,17 +102,21 @@ class PPOCarla(object):
         print(f"Trained agent ({epoch}) loaded")
         return epoch + 1
 
-    def fill_buffer(self, current_state_obs=None, recurrent_hidden_states=None, output=None, log_prob=None, state_value=None, reward=None, communication_vector=None, termination_mask=None, step=None):
+    def fill_buffer(self, current_state_obs=None, recurrent_hidden_states=None, output=None, log_prob=None, state_value=None, reward=None, communication_vector=None, done_mask=None, step=None):
         """
         Add to buffer the data collected from a step interaction with the environment otherwise add first observation or last state value
         """
         assert self.buffer is not None, "You should call `reset_buffer` first."
-        assert None not in (current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, termination_mask) or \
+        assert None not in (current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, done_mask) or \
                ((current_state_obs is not None or state_value is not None) and step >= 0), "The arguments passed do not match any intended behaviour of the method."
-        if None not in (current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, termination_mask):
-            self.buffer.insert(current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, termination_mask)
+        if None not in (current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, done_mask):
+            self.buffer.insert(current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, done_mask)
         elif current_state_obs is not None: [self.buffer.obs[key][step].copy_(current_state_obs[key]) for key in current_state_obs]
         else: self.buffer.value_preds[step].copy_(state_value)
+
+    def reset_buffer(self):
+        if self.buffer is not None: del self.buffer
+        self.buffer = self._init_buffer()
 
     def update(self, valid_steps):
         self.buffer.compute_returns(self.use_gae, self.adv_gamma, self.adv_lambda)

@@ -62,7 +62,7 @@ class BaseOptions():
         self.parser.add_argument('--step_reward', type=float, default=0, required=False, help='The (negative) reward to assign for each step (default %(default)s).')
         self.parser.add_argument('--adv_gamma', type=positive_float, default=0.99, required=False, help='The discount factor of PPO advantage (default %(default)s).')  # Q LEARNING discount rate
         self.parser.add_argument('--adv_lambda', type=positive_float, default=0.95, required=False, help='The discount factor of PPO advantage (default %(default)s).')
-        self.parser.add_argument('--rollout_size', type=positive_float, default=150, required=False, help='Maximum number of samples to collect in replay storage (default %(default)s).')
+        self.parser.add_argument('--rollout_size', type=positive_float, default=200, required=False, help='Maximum number of samples to collect in replay storage (default %(default)s).')
         self.parser.add_argument('--multiagent', required=False, action='store_true', help='Control each actor with a different agent.')
 
 
@@ -122,8 +122,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--continue_train', type=int, default=None, help='continue training: if set to -1 load the latest model from save_path')
         self.parser.add_argument('-opt', '--optimizer', type=str.lower, default='adam', required=False, choices=['adam', 'rmsprop', 'sgd', 'adagrad', 'adadelta', 'adamax'], help='The optimizer to be used. (default %(default)s).')
         self.parser.add_argument('--lr', type=positive_float, default=0.0005, help='initial learning rate')
-        self.parser.add_argument('--lr_niter_frozen', type=int, default=100, help='[lr_policy=lambda] # of iter at starting learning rate')
-        self.parser.add_argument('--lr_niter_decay', type=int, default=1000, help='[lr_policy=lambda] # of iter to linearly decay learning rate to zero')
+        self.parser.add_argument('--lr_niter_frozen', type=int, default=200, help='[lr_policy=lambda] # of iter at starting learning rate')
+        self.parser.add_argument('--lr_niter_decay', type=int, default=500, help='[lr_policy=lambda] # of iter to linearly decay learning rate to zero')
         self.parser.add_argument('--lr_weight_decay', default=0, type=float, help='Weight decay for "adam"')
         self.parser.add_argument('--lr_beta1', type=positive_float, default=0.9, required=False, help='The beta 1 for the optimizer (default %(default)s).')
         self.parser.add_argument('--lr_beta2', type=positive_float, default=0.999, required=False, help='The beta 2 for the optimizer (default %(default)s).')

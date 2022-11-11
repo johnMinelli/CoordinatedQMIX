@@ -111,7 +111,7 @@ class NonSignalizedIntersection4Car(MultiCarlaEnv):
 
         measures = np.array([
             py_measurements["forward_speed"],
-            target_rel_x, target_rel_y, target_rel_x_unit, target_rel_y_unit,
+            target_rel_x, target_rel_x_unit, target_rel_y, target_rel_y_unit,
             py_measurements["collision_vehicles"],
             py_measurements["collision_pedestrians"],
             py_measurements["collision_other"],
@@ -198,6 +198,13 @@ class NonSignalizedIntersection4Car(MultiCarlaEnv):
 
     def get_actors_loc(self):
         return {k: np.array([v.get_location().x, v.get_location().y, v.get_location().z]) for k, v in self._actors.items() if not self._env_config["ignore_autonomous"] or k in self.non_auto_actors }
+
+    def get_stats(self):
+        return {"rewards": self._total_reward,
+                "coll_others": {k: v.collision_other for k, v in self._collisions.items()},
+                "coll_vehicles": {k: v.collision_vehicles for k, v in self._collisions.items()},
+                "offlane": {k: v.offlane for k, v in self._lane_invasions.items()},
+                "offroad": {k: v.offroad for k, v in self._lane_invasions.items()}}
 
 # If instead you want to predict 5 separata values
 def vehicle_control_to_action(vehicle_control, is_discrete):

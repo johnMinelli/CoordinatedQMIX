@@ -217,7 +217,7 @@ def main():
             logging.warning(msg, args.number_of_vehicles, number_of_spawn_points)
             args.number_of_vehicles = number_of_spawn_points
 
-        # @todo cannot import these directly.
+        # todo cannot import these directly.
         SpawnActor = carla.command.SpawnActor
         SetAutopilot = carla.command.SetAutopilot
         FutureActor = carla.command.FutureActor
