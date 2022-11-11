@@ -82,22 +82,30 @@ class Logger(object):
             self._log_stats_to_dashboards(self.total_steps, prefix, {"lr": lr})
 
     # TODO you should consider if you want to log step by step also for the validation or only for episode stop
-    def episode_stop(self, total_reward):
+    def episode_stop(self, env_stats):
         assert self.episode is not None, "You should call `episode_start` first."
         episode_time = time.time() - self.episode_start_time
         avg_time = episode_time / self.steps
+
+        total_reward = env_stats["rewards"]
         tot_actors_reward = {"Tot_reward_"+k: r for k,r in total_reward.items()}
         avg_actors_reward = {"Avg_reward_"+k: r / self.steps for k,r in total_reward.items()}
         tot_reward = np.mean(np.array(list(tot_actors_reward.values())))
         avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
         avg_reward_over_time = avg_reward / episode_time
+
+        tot_env_stats = {"coll_others": sum([v for v in list(env_stats["coll_others"].values())]),
+                         "coll_vehicles": sum([v for v in list(env_stats["coll_vehicles"].values())]),
+                         "offlane": sum([v for v in list(env_stats["offlane"].values())]),
+                         "offroad": sum([v for v in list(env_stats["offroad"].values())])}
+
         avg_losses = np.mean(list(self.total_losses.values()), 1) if len(self.total_losses) > 0 else []
 
         self.log('Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
                  ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
                  (' - Avg Losses : [' + ', '.join([str(l) for l in avg_losses]) + ']' if len(avg_losses)>0 else '') +
                  ' - Avg Time : {:.3f}'.format(avg_time))
-        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time})
+        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats})
 
         if self.progress_bar is not None:
             self.progress_bar.update(self.episode + 1)
