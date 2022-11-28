@@ -1,5 +1,7 @@
 # Coordinated Autonomous Driving
 
+> Learning a communication which incentive coordination
+
 #### CARLA Traffic control with comunicating agents
 #### Traffic control for multi agent autonomous driving
 

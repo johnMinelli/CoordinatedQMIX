@@ -1,9 +1,6 @@
 ﻿import logging
 import math
-import random
-import socket
 import sys
-import time
 import traceback
 
 import carla
@@ -18,8 +15,8 @@ from macad_gym.core.controllers.keyboard_control import KeyboardControl
 from macad_gym.core.sensors.utils import preprocess_image
 from macad_gym.viz.render import multi_view_render
 
-from macad.reward import CustomReward
-from macad.scenarios import CustomScenarios
+from envs.macad.reward import CustomReward
+from envs.macad.scenarios import CustomScenarios
 
 logging.basicConfig(format='%(levelname)s: %(message)s', level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -27,11 +24,6 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 
 N_ACTORS_ENV = 4
 Z_CUBE = 40
-
-
-def make_env(opt):
-    return NonSignalizedIntersection4Car()
-
 
 class NonSignalizedIntersection4Car(MultiCarlaEnv):
     """A 4-way signalized intersection Multi-Agent Carla-Gym environment"""

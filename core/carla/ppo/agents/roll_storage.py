@@ -11,7 +11,7 @@ def _flatten_helper(T, N, _tensor):
     else:
         return _tensor.view(T * N, *_tensor.size()[2:])
 
-
+    
 class RolloutStorage(object):
     '''
     Class for rollout memory that is collected from the environment at each RL epoch

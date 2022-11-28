@@ -5,8 +5,8 @@ import torch.nn as nn
 from gym.spaces import Dict
 from macad_gym.carla.multi_env import DISCRETE_ACTIONS
 
-from core.carla_model.distributions import Categorical, DiagGaussian
-from core.carla_model.utils import init, init_normc_
+from core.carla.ppo.model.distributions import Categorical, DiagGaussian
+from core.carla.ppo.model.utils import init, init_normc_
 
 
 class Flatten(nn.Module):
@@ -62,7 +62,7 @@ class Policy(nn.Module):
     def act(self, img, msr, rnn_hxs, comm, masks, eps, deterministic=False):
         value, actor_features, rnn_hxs = self.base(img, msr, rnn_hxs, comm, masks)
         a_dist = self.a_dist(actor_features)
-        c_dist = self.c_dist(actor_features)  # TODO qui usava l'hidden in realtà non lo score
+        c_dist = self.c_dist(actor_features)
 
         if torch.rand(1).item() < eps:  # act at random if lower than epsilon
             action = torch.tensor([[self.action_space.sample()]]).type_as(actor_features)
@@ -127,7 +127,7 @@ class CNNBase(nn.Module):
             )
 
             self.fc_joint = nn.Sequential(
-                self.init_fc(nn.Linear(hidden_size*2, hidden_size*2)),
+                self.init_fc(nn.Linear(hidden_size*3, hidden_size*2)),
                 nn.ReLU(),
                 self.init_fc(nn.Linear(hidden_size*2, hidden_size)),
                 nn.ReLU(),
@@ -145,12 +145,11 @@ class CNNBase(nn.Module):
     def _backbone_proc(self, img, msr, comm):
         x_img = self.cnn_backbone(img)
 
-        # if msr is not None:  # TODO
         x_msr = self.fc_enc(msr)
         # x_comm = self.comm_enc(comm)
         # x = torch.cat([x_img, x_msr, comm], -1)
         # x = self.fc_joint(x)
-        x = torch.cat([x_img, x_msr], -1)
+        x = torch.cat([x_img, x_msr, comm], -1)
         x = self.fc_joint(x)
         # else:
         #     x = x_img
@@ -203,8 +202,8 @@ class CNNGRU(CNNBase):
     def forward(self, img, msr, rnn_hxs, comm, done_masks):
         x = super()._backbone_proc(img, msr, comm)
 
-        x_comm = self.comm_enc(comm)
-        x = x + x_comm
+        # x_comm = self.comm_enc(comm)
+        # x = x + x_comm
 
         if x.size(0) == rnn_hxs.size(0):  # batch size contains whole sequences?
             x, rnn_hxs = self.gru(x.unsqueeze(0), (rnn_hxs * done_masks).unsqueeze(0))  # unsqueeze to set num_layers dim=1

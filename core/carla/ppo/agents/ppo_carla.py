@@ -1,17 +1,14 @@
 import glob
-import itertools
-import datetime
 import os
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
 import torch.nn.functional as F
 from macad_gym.carla.multi_env import MultiCarlaEnv
 
-from core.carla_agents.storage import RolloutStorage
-from core.carla_model.model import Policy
+from core.carla.ppo.agents.roll_storage import RolloutStorage
+from core.carla.ppo.model.model import Policy
 from path import Path
 
 from utils.utils import get_scheduler, print_network, mkdirs

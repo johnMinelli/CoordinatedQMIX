@@ -45,45 +45,44 @@ class Logger(object):
     def episode_start(self, episode):
         self.episode = episode
         self.steps = 0
-        self.total_losses = {}
+        self.total_metrics = {}
         self.episode_start_time = time.time()
         return self
 
     def valid_start(self):
         assert self.valid, "Logger not initialized with validation settings."
-        self.holding_episode_info = (self.episode, self.steps, self.total_losses, self.episode_start_time)
+        self.holding_episode_info = (self.episode, self.steps, self.total_metrics, self.episode_start_time)
         self.episode_start(0)
 
-    def _step(self, steps, losses):
+    def _step(self, steps, metrics):
         self.steps += steps
         self.total_steps += steps
         # losses error & metrics
-        for k, v in losses.items():
-            self.total_losses[k] = (self.total_losses.get(k, []) + [v])
-        avg_losses = [np.mean(v) for v in losses.values()]
-        return avg_losses
+        for k, v in metrics.items():
+            self.total_metrics[k] = (self.total_metrics.get(k, []) + [v])
+        avg_metrics = [np.mean(v) for v in metrics.values()]
+        return avg_metrics
 
-    def train_step(self, steps, losses, lr):
+    def train_step(self, steps, metrics, lr):
         assert self.episode is not None, "You should call `episode_start` first."
-        avg_losses = self._step(steps, losses)
-        if len(avg_losses) > 0:
+        avg_metrics = self._step(steps, metrics)
+        if len(avg_metrics) > 0:
             prefix = "train"
-            self.log(' * ' + ', '.join(['Avg ' + str(k).capitalize() + ' : {:.5f}'.format(v) for k, v in zip(self.total_losses.keys(), avg_losses)]) + '\tLr: ' + str(lr))
-            self._log_stats_to_dashboards(self.total_steps, prefix, {str(k).capitalize(): v for k, v in zip(self.total_losses.keys(), avg_losses)})
+            if not steps%self.print_freq: self.log(' * ' + ', '.join(['Avg ' + str(k).capitalize() + ' : {:.5f}'.format(v) for k, v in zip(self.total_metrics.keys(), avg_metrics)]) + '\tLr: ' + str(lr))
+            self._log_stats_to_dashboards(self.total_steps, prefix, {str(k).capitalize(): v for k, v in zip(self.total_metrics.keys(), avg_metrics)})
             self._log_stats_to_dashboards(self.total_steps, prefix, {"lr": lr})
 
-    def valid_step(self, steps, losses, lr):
+    def valid_step(self, steps, metrics):
         assert self.episode is not None, "You should call `valid_start` first."
-        avg_losses = self._step(steps, losses)
-        if len(avg_losses) > 0:
+        avg_metrics = self._step(steps, metrics)
+        if len(avg_metrics) > 0:
             prefix = "valid"
-            self.log(' * ' + ', '.join(['Avg ' + str(k).capitalize() + ' : {:.5f}'.format(v) for k, v in zip(self.total_losses.keys(), avg_losses)]) + '\tLr: ' + str(lr))
-            self._log_stats_to_dashboards(self.total_steps, prefix, {str(k).capitalize(): v for k, v in zip(self.total_losses.keys(), avg_losses)})
-            self._log_stats_to_dashboards(self.total_steps, prefix, {"lr": lr})
+            if not steps%self.print_freq: self.log(' * ' + ', '.join(['Avg ' + str(k).capitalize() + ' : {:.5f}'.format(v) for k, v in zip(self.total_metrics.keys(), avg_metrics)]))
+            self._log_stats_to_dashboards(self.total_steps, prefix, {str(k).capitalize(): v for k, v in zip(self.total_metrics.keys(), avg_metrics)})
 
-    # TODO you should consider if you want to log step by step also for the validation or only for episode stop
-    def episode_stop(self, env_stats):
+    def episode_stop(self, env_stats, num_stats):
         assert self.episode is not None, "You should call `episode_start` first."
+        assert "rewards" in env_stats and isinstance(env_stats["rewards"], dict) is not None, "The rewards:dict field is necessary"
         episode_time = time.time() - self.episode_start_time
         avg_time = episode_time / self.steps
 
@@ -94,28 +93,39 @@ class Logger(object):
         avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
         avg_reward_over_time = avg_reward / episode_time
 
-        tot_env_stats = {"coll_others": sum([v for v in list(env_stats["coll_others"].values())]),
-                         "coll_vehicles": sum([v for v in list(env_stats["coll_vehicles"].values())]),
-                         "offlane": sum([v for v in list(env_stats["offlane"].values())]),
-                         "offroad": sum([v for v in list(env_stats["offroad"].values())])}
+        tot_env_stats = {k: sum([vi for vi in list(v.values())]) for k, v in env_stats.items() if k != "rewards"}
 
-        avg_losses = np.mean(list(self.total_losses.values()), 1) if len(self.total_losses) > 0 else []
+        avg_metrics = [np.mean(v) for v in list(self.total_metrics.values())] if len(self.total_metrics) > 0 else []
 
         self.log('Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
                  ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
-                 (' - Avg Losses : [' + ', '.join([str(l) for l in avg_losses]) + ']' if len(avg_losses)>0 else '') +
+                 (' - Avg Metrics : [' + ', '.join([str(l) for l in avg_metrics]) + ']' if len(avg_metrics)>0 else '') +
                  ' - Avg Time : {:.3f}'.format(avg_time))
-        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats})
+        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats, **num_stats})
 
         if self.progress_bar is not None:
             self.progress_bar.update(self.episode + 1)
             if self.episode + 1 == self.episodes:
                 self.progress_bar.finish()
 
-        return avg_time, avg_losses, avg_reward
+        return avg_time, avg_metrics, avg_reward
 
-    def valid_stop(self, total_reward, score):
-        self.episode, self.steps, self.total_losses, self.episode_start_time = self.holding_episode_info
+    def valid_stop(self, env_stats, num_stats):
+        assert self.episode is not None, "You should call `episode_start` first."
+        assert "rewards" in env_stats and isinstance(env_stats["rewards"], dict) is not None, "The rewards:dict field is necessary"
+        episode_time = time.time() - self.episode_start_time
+
+        total_reward = env_stats["rewards"]
+        avg_actors_reward = {"Avg_reward_"+k: r / self.steps for k,r in total_reward.items()}
+        avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
+        avg_reward_over_time = avg_reward / episode_time
+
+        self.log('Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
+                 ' * Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time))
+        self._log_stats_to_dashboards(self.total_steps, "Valid", {**avg_actors_reward, "Avg_reward": avg_reward, "Reward_over_time": avg_reward_over_time}, **num_stats)
+
+        # restore values
+        self.episode, self.steps, self.total_metrics, self.episode_start_time = self.holding_episode_info
 
     def _log_stats_to_dashboards(self, step, prefix, stats):
         for name, value in stats.items():

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from core.carla_model.utils import AddBias, init
+from core.carla.ppo.model.utils import AddBias, init
 
 
 # Categorical
