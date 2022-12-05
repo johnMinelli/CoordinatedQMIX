@@ -44,18 +44,18 @@ class ReplayBuffer:
 
     def sample_chunk(self, batch_size, chunk_size):
 
-        start_idx = self.rng.choice(len(self.states) - (chunk_size+1), size=batch_size, replace=False)
+        start_idx = self.rng.choice(len(self.states) - chunk_size, size=batch_size, replace=False)
         # to get the prev dones i'll return sequences of 1+chunk_size
 
         chunk_states = np.stack([np.array(self.states)[idx+1:idx+1 + chunk_size] for idx in start_idx])
         chunk_actions = np.stack([np.array(self.actions)[idx+1:idx+1 + chunk_size] for idx in start_idx])
         chunk_rewards = np.stack([np.array(self.rewards)[idx+1:idx+1 + chunk_size] for idx in start_idx])
         chunk_next_states = np.stack([np.array(self.next_states)[idx+1:idx+1 + chunk_size] for idx in start_idx])
-        chunk_dones = np.stack([np.array(self.dones)[idx:idx + chunk_size+1] for idx in start_idx])
+        chunk_dones = np.stack([np.array(self.dones)[idx:idx + chunk_size] for idx in start_idx])
         chunk_done_masks = (np.ones(chunk_dones.shape) - chunk_dones)
 
         return torch.tensor(chunk_states, dtype=torch.float).squeeze(2).to(self.device), \
-               torch.tensor(chunk_actions, dtype=torch.float).squeeze(2).to(self.device), \
+               torch.tensor(chunk_actions, dtype=torch.float).to(self.device), \
                torch.tensor(chunk_rewards, dtype=torch.float).squeeze(2).to(self.device), \
                torch.tensor(chunk_next_states, dtype=torch.float).squeeze(2).to(self.device), \
                torch.tensor(chunk_done_masks, dtype=torch.float).squeeze(2).to(self.device)

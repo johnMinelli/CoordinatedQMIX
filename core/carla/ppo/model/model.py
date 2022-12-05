@@ -3,7 +3,6 @@ import math
 import torch
 import torch.nn as nn
 from gym.spaces import Dict
-from macad_gym.carla.multi_env import DISCRETE_ACTIONS
 
 from core.carla.ppo.model.distributions import Categorical, DiagGaussian
 from core.carla.ppo.model.utils import init, init_normc_

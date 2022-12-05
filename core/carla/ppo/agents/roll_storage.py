@@ -39,9 +39,6 @@ class RolloutStorage(object):
         self.comm_vectors = torch.zeros(n_steps + 1, n_processes, recurrent_hidden_state_size)
         self.masks = torch.ones(n_steps + 1, n_processes, 1)
 
-        # Masks that indicate whether it's a true terminal state or time limit end state
-        self.bad_masks = torch.ones(n_steps + 1, n_processes, 1)
-
         self.n_steps = n_steps
         self.n_processes = n_processes
         self.step = 0

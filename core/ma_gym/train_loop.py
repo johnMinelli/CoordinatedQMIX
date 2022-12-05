@@ -15,61 +15,11 @@ from core.ma_gym.maddpg import MADDPGGym
 from core.ma_gym.qmix import QMixGym
 from core.ma_gym.vdn import VDNGym
 from envs.multiprocessing_env import SubprocVecEnv
+from envs.wrappers import EnvWrap, MaGymEnvWrap
 from utils.logger import Logger
 
 global _device
 
-
-class EnvWrap(BaseWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        self.n_agents = env.unwrapped.num_agents
-        self.agents_ids = env.unwrapped.agents
-        self.clock = pygame.time.Clock()
-        self.observation_space = {k: self.observation_space(k) for k in self.agents_ids}
-        self.action_space = {k: self.action_space(k) for k in self.agents_ids}
-
-    def reset(self, **kwargs):
-        super().reset(**kwargs)
-        obs_dict = {id: self.observe(id).copy() for id in self.agents_ids}
-        rewards_dict = self.rewards
-        dones_dict = {id: self.terminations[id] or self.truncations[id] for id in self.agents_ids}
-        info_dict = self.infos
-        return obs_dict, rewards_dict, dones_dict, info_dict
-
-    def step(self, actions):
-        self._register_input()
-        for id, action in zip(self.agents_ids, actions):
-            super().step(action)
-        obs_dict = {id: self.observe(id).copy() for id in self.agents_ids}
-        rewards_dict = self.rewards
-        dones_dict = {id: self.terminations[id] or self.truncations[id] for id in self.agents_ids}
-        info_dict = self.infos
-        return obs_dict, rewards_dict, dones_dict, info_dict
-
-    def get_near_matrix(self):
-        agents = self.unwrapped.env.agents
-        positions = [a.current_pos for a in agents]
-        size_obs = list(self.observation_space.values())[0].shape[0]
-        identity = np.expand_dims(np.identity(len(agents)), -1) * size_obs
-        near_mat = np.all((np.abs(np.expand_dims(positions, 0) - np.expand_dims(positions, 1)) + identity) <= math.floor(size_obs / 2), 2)
-        return near_mat
-
-    def get_opponent_num(self):
-        return len(self.unwrapped.env.evaders)
-
-    def render(self, **kwargs):
-        self.clock.tick(30)
-        ret = super().render(**kwargs)
-        pygame.display.flip()
-        return ret
-
-    def _register_input(self):
-        if pygame.get_init():
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    print("Stop")
-                    return
 
 def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable[[Namespace, EnvWrap], object], logger: Logger):
     # Initialize elements
@@ -77,8 +27,8 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
     agents = agents_fn(opt, env)
 
     agents_ids = env.agents_ids
-    obs_a, obs_b, obs_c = list(env.observation_space.values())[0].shape
-    expand_near_mask = lambda m: np.repeat(np.expand_dims(np.repeat(np.expand_dims(np.repeat(np.expand_dims(np.expand_dims(m, 0), -1), obs_a, -1), -1), obs_b, -1), -1), obs_c, -1)
+    # obs_a, obs_b, obs_c = list(env.observation_space.values())[0].shape
+    # expand_near_mask = lambda m: np.repeat(np.expand_dims(np.repeat(np.expand_dims(np.repeat(np.expand_dims(np.expand_dims(m, 0), -1), obs_a, -1), -1), obs_b, -1), -1), obs_c, -1)
 
     for episode in range(agents.start_epoch, opt.episodes):
         logger.episode_start(episode)
@@ -86,7 +36,8 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
         step = 0
 
         agents.decay_exploration(episode)
-        hxs, g_hxs = agents.init_hidden()
+        hxs = agents.init_hidden()
+        if isinstance(hxs, tuple): hxs, g_hxs = hxs
         comm_msgs = agents.init_comm_msgs()
         current_state_obs, _, dones, _ = env.reset()
         current_state_obs = np.expand_dims(np.stack([current_state_obs[id] for id in agents_ids]), 0)
@@ -97,24 +48,26 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             step += 1
             # select agent actions from observations
             actions = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, g_hxs, comm_msgs, torch.Tensor(dones).to(_device))
-            if isinstance(actions, tuple):
-                actions, hxs, g_hxs, comm_msgs = actions
-            actions = actions.cpu().squeeze(0).numpy()
+            if isinstance(actions, tuple): actions, hxs, comm_msgs = actions
+            if isinstance(hxs, tuple): hxs, g_hxs = hxs
+            actions = actions.view(-1).cpu().numpy()
 
             # env step
-            next_state_obs, rewards_dict, dones, info = env.step(list(map(lambda a: None if dones[0,a[0]] else a[1], enumerate(actions))))
+            next_state_obs, rewards_dict, dones, info = env.step(list(map(lambda a: None if dones[0, a[0]] else a[1], enumerate(actions))))
             if opt.render_mode is not None: env.render()
 
             rewards = np.array(list(rewards_dict.values()))
             total_rewards += rewards
 
-            # prepare data
+            # preprocess new state
             rewards = np.expand_dims(rewards, 0)
             next_state_obs = np.expand_dims(np.stack([next_state_obs[id] for id in agents_ids]), 0)
             dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
             # let agent take step and add to memory
             losses = agents.step(current_state_obs, actions, rewards, next_state_obs, dones)
             logger.train_step(1, {**rewards_dict, **losses}, agents.schedulers[0].get_last_lr()[0])
+            # update for next iteration
+            current_state_obs = next_state_obs
 
         # optionally save models
         if episode != 0 and (episode % opt.agent_save_interval == 0):
@@ -134,30 +87,32 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             total_rewards = np.zeros(test_env.n_agents)
             step = 0
 
+            logger.valid_start()
             for episode in range(opt.val_episodes):
-                logger.valid_start()
 
                 hxs = agents.init_hidden()
+                if isinstance(hxs, tuple): hxs, g_hxs = hxs
+                comm_msgs = agents.init_comm_msgs()
                 current_state_obs, _, dones, _ = test_env.reset()
                 current_state_obs = np.expand_dims(np.stack([current_state_obs[id] for id in agents_ids]), 0)
-                comm_msgs = agents.init_comm_msgs()
                 dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
                 while not dones.all():
                     step += 1
 
-                    actions = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs.to(_device), torch.Tensor(comm_msgs).to(_device), explore=False)
-                    if isinstance(actions, tuple): actions, hxs = actions
-                    next_state_obs, rewards_dict, dones, info = test_env.step(list(map(lambda a: None if dones[0, a[0]] else a[1], enumerate(actions.squeeze(0).numpy()))))
+                    actions = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, g_hxs, comm_msgs, torch.Tensor(dones).to(_device), explore=False)
+                    if isinstance(actions, tuple): actions, hxs, comm_msgs = actions
+                    if isinstance(hxs, tuple): hxs, g_hxs = hxs
+                    actions = actions.view(-1).cpu().numpy()
+                    next_state_obs, rewards_dict, dones, info = test_env.step(list(map(lambda a: None if dones[0, a[0]] else a[1], enumerate(actions))))
                     if opt.render_mode is not None: test_env.render()
                     total_rewards += np.array(list(rewards_dict.values()))
                     next_state_obs = np.expand_dims(np.stack([next_state_obs[id] for id in agents_ids]), 0)
-                    next_comm_msgs = np.repeat(np.expand_dims(next_state_obs, 1), next_state_obs.shape[1], axis=1) * expand_near_mask(test_env.get_near_matrix())
-                    dones = np.expand_dims(np.stack([np.array(dones[id], dtype=int) for id in agents_ids]), 0)
+                    dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
 
                     current_state_obs = next_state_obs
-                    comm_msgs = next_comm_msgs
                 logger.valid_step(1, {})
-            logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"evaders": env.get_opponent_num()})
+            test_env.close()
+            logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"evaders": test_env.get_opponent_num()})
             agents.switch_mode('train')
     env.close()
 
@@ -172,8 +127,17 @@ def gym_loop(args, device, logger):
             env = EnvWrap(pursuit_v4.env(max_cycles=500, x_size=16, y_size=16, shared_reward=False, n_evaders=16, n_pursuers=16,
                            obs_range=7, n_catch=2, freeze_evaders=True, tag_reward=0.01, catch_reward=5.0,
                            urgency_reward=-0.1, surround=True, constraint_window=1.0, render_mode=args.render_mode))
+        elif args.env == "checkers":
+            env = MaGymEnvWrap(gym.make("ma_gym:Checkers-v0"))
+        elif args.env == "switch":
+            gym.envs.register(
+                id='MySwitch4-v0',
+                entry_point='ma_gym.envs.switch:Switch',
+                kwargs={'n_agents': 4, 'full_observable': False, 'step_cost': -0.1, 'max_steps': 250}
+            )
+            env = MaGymEnvWrap(gym.make("ma_gym:MySwitch4-v0"))
         elif args.env == "trafficjunction":
-            env = gym.make("ma:trafficjunctionv0")
+            env = MaGymEnvWrap(gym.make("ma:trafficjunctionv0"))
         else:
             env = gym.make(args.env)
         return env
@@ -182,13 +146,11 @@ def gym_loop(args, device, logger):
         # Set default arguments
         if args.agent == 'maddpg':
             # args.env = 'ma_gym:Switch2-v2'
-            args.recurrent = True
             args.lr_mu = 0.0005
             args.lr_q = 0.001
             args.batch_size = 32
             args.tau = 0.005
             args.gamma = 0.99
-            args.episodes = 10000
             args.K_epochs = 1
             args.chunk_size = 10
             args.gumbel_max_temp = 10
@@ -206,7 +168,6 @@ def gym_loop(args, device, logger):
             args.min_epsilon = 0.1
             args.K_epochs = 10
             args.chunk_size = 10
-            args.recurrent = True
             args.update_target_interval = 20
             agent = QMixGym(opt, env, _device)
         elif args.agent == 'coordqmix':
@@ -224,12 +185,10 @@ def gym_loop(args, device, logger):
             agent = CoordQMixGym(opt, env, _device)
         elif args.agent == 'vdn':
             # args.env = 'ma_gym:Checkers-v0'
-            args.recurrent = True
             args.lr = 0.0001
             args.batch_size = 32
             args.gamma = 0.99
             args.grad_clip_norm = 5
-            args.episodes = 500
             args.max_epsilon = 0.9
             args.min_epsilon = 0.1
             args.K_epochs = 4
@@ -241,7 +200,6 @@ def gym_loop(args, device, logger):
             args.lr = 0.0005
             args.batch_size = 32
             args.gamma = 0.99
-            args.episodes = 30000
             args.max_epsilon = 0.9
             args.min_epsilon = 0.1
             args.K_epochs = 10
@@ -254,3 +212,4 @@ def gym_loop(args, device, logger):
 
     # run loop
     play_loop(args, proc_env_fn, create_agent_fn, logger)
+    # TODO generalize with named tuples to step the agent and fill the replay_memory
