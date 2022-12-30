@@ -41,8 +41,8 @@ class MaGymEnvWrap(object):
         near_mat = np.all((np.abs(np.expand_dims(positions, 0) - np.expand_dims(positions, 1)) + identity) <= math.floor(size_obs / 2), 2)
         return near_mat
 
-    def get_opponent_num(self):
-        return 0
+    def get_success_metric(self):
+        return int(self.env._step_count < self.env._max_steps)
 
     def render(self, **kwargs):
         self.clock.tick(30)
@@ -67,6 +67,8 @@ class EnvWrap(BaseWrapper):
         self.action_space = {k: self.action_space(k) for k in self.agents_ids}
 
     def reset(self, **kwargs):
+        if not pygame.get_init():
+            pygame.init()
         super().reset(**kwargs)
         obs_dict = {id: self.observe(id).copy() for id in self.agents_ids}
         rewards_dict = self.rewards
@@ -77,6 +79,8 @@ class EnvWrap(BaseWrapper):
     def step(self, actions):
         self._register_input()
         for id, action in zip(self.agents_ids, actions):
+            if self.agent_selection != id:
+                raise Exception(f"Action selected do not match the current agent: current agent is {self.agent_selection}, but action is for {id}") 
             super().step(action)
         obs_dict = {id: self.observe(id).copy() for id in self.agents_ids}
         rewards_dict = self.rewards
@@ -92,8 +96,8 @@ class EnvWrap(BaseWrapper):
         near_mat = np.all((np.abs(np.expand_dims(positions, 0) - np.expand_dims(positions, 1)) + identity) <= math.floor(size_obs / 2), 2)
         return near_mat
 
-    def get_opponent_num(self):
-        return len(self.unwrapped.env.evaders)
+    def get_success_metric(self):
+        return self.unwrapped.env.n_evaders-len(self.unwrapped.env.evaders)
 
     def render(self, **kwargs):
         self.clock.tick(30)

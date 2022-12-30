@@ -1,20 +1,14 @@
 import os
-from argparse import Namespace
 from copy import deepcopy
 
-import gym
-import numpy as np
 import pandas as pd
-import pygame
 import torch
 import wandb
 from tensorboardX import SummaryWriter
-
-from core.carla.train_loop import carla_loop
 from core.ma_gym.train_loop import gym_loop
-from envs.macad.env import NonSignalizedIntersection4Car
-from external.navigation.basic_agent import BasicAgent
-
+# import lovely_tensors as lt
+# lt.monkey_patch()
+# lt.repr_str.PRINT_OPTS.color=False
 
 from utils.logger import Logger
 from utils.parser import TrainOptions
@@ -78,14 +72,3 @@ if __name__ == '__main__':
     #   wandb sweep config.yaml
     #
     # Or from web interface
-
-
-    # for actor_id in actor_configs.keys():
-    #     vehicle_dict[actor_id] = env._actors[actor_id]
-    #     end_wp = env._end_pos[actor_id]
-    #     # Set the goal for the planner to be 0.2 m after the destination
-    #     # to avoid falling short & not triggering done
-    #     dest_loc = get_next_waypoint(env.world, env._end_pos[actor_id], 0.2)
-    #     agent = BasicAgent(env._actors[actor_id], target_speed=40)
-    #     agent.set_destination(dest_loc)
-    #     agent_dict[actor_id] = agent

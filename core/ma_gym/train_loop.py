@@ -24,6 +24,7 @@ global _device
 def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable[[Namespace, EnvWrap], object], logger: Logger):
     # Initialize elements
     env = env_fn()
+    test_env = env_fn()
     agents = agents_fn(opt, env)
 
     agents_ids = env.agents_ids
@@ -37,8 +38,6 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
 
         agents.decay_exploration(episode)
         hxs = agents.init_hidden()
-        if isinstance(hxs, tuple): hxs, g_hxs = hxs
-        comm_msgs = agents.init_comm_msgs()
         current_state_obs, _, dones, _ = env.reset()
         current_state_obs = np.expand_dims(np.stack([current_state_obs[id] for id in agents_ids]), 0)
         dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
@@ -47,14 +46,12 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
         while not dones.all():
             step += 1
             # select agent actions from observations
-            actions = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, g_hxs, comm_msgs, torch.Tensor(dones).to(_device))
-            if isinstance(actions, tuple): actions, hxs, comm_msgs = actions
-            if isinstance(hxs, tuple): hxs, g_hxs = hxs
+            actions, hxs = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, torch.Tensor(dones).to(_device))
             actions = actions.view(-1).cpu().numpy()
 
             # env step
             next_state_obs, rewards_dict, dones, info = env.step(list(map(lambda a: None if dones[0, a[0]] else a[1], enumerate(actions))))
-            if opt.render_mode is not None: env.render()
+            if opt.render_mode == "human": env.render()
 
             rewards = np.array(list(rewards_dict.values()))
             total_rewards += rewards
@@ -74,7 +71,7 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             print(f'Saving agent at episode: {episode}.')
             agents.save_model("policy", episode)
 
-        logger.episode_stop({"rewards": {k: v for k,v in zip(env.agents_ids, total_rewards)}}, {"evaders": env.get_opponent_num()})
+        logger.episode_stop({"rewards": {k: v for k,v in zip(env.agents_ids, total_rewards)}}, {"success": env.get_success_metric()})
         agents.update_learning_rate()
 
         # Update
@@ -91,20 +88,16 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             for episode in range(opt.val_episodes):
 
                 hxs = agents.init_hidden()
-                if isinstance(hxs, tuple): hxs, g_hxs = hxs
-                comm_msgs = agents.init_comm_msgs()
                 current_state_obs, _, dones, _ = test_env.reset()
                 current_state_obs = np.expand_dims(np.stack([current_state_obs[id] for id in agents_ids]), 0)
                 dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
                 while not dones.all():
                     step += 1
 
-                    actions = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, g_hxs, comm_msgs, torch.Tensor(dones).to(_device), explore=False)
-                    if isinstance(actions, tuple): actions, hxs, comm_msgs = actions
-                    if isinstance(hxs, tuple): hxs, g_hxs = hxs
+                    actions, hxs = agents.take_action(torch.Tensor(current_state_obs).to(_device), hxs, torch.Tensor(dones).to(_device))
                     actions = actions.view(-1).cpu().numpy()
                     next_state_obs, rewards_dict, dones, info = test_env.step(list(map(lambda a: None if dones[0, a[0]] else a[1], enumerate(actions))))
-                    if opt.render_mode is not None: test_env.render()
+                    if opt.render_mode == "human" or opt.render_mode == "human_val": test_env.render()
                     total_rewards += np.array(list(rewards_dict.values()))
                     next_state_obs = np.expand_dims(np.stack([next_state_obs[id] for id in agents_ids]), 0)
                     dones = np.expand_dims(np.stack([dones[id] for id in agents_ids]), 0)
@@ -112,9 +105,14 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
                     current_state_obs = next_state_obs
                 logger.valid_step(1, {})
             test_env.close()
-            logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"evaders": test_env.get_opponent_num()})
+            logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"success": test_env.get_success_metric()})
             agents.switch_mode('train')
     env.close()
+
+    print(f'Saving agent at episode: {opt.episodes}.')
+    models = agents.save_model("policy", opt.episodes)
+    for name, path in models.items():
+        logger.log_artifact(path, name, f"checkpoint_{opt.episodes}")
 
 def gym_loop(args, device, logger):
     global _device
@@ -124,8 +122,8 @@ def gym_loop(args, device, logger):
         # Create the game environment
         if args.env == "pursuit":
             from pettingzoo.sisl import pursuit_v4
-            env = EnvWrap(pursuit_v4.env(max_cycles=500, x_size=16, y_size=16, shared_reward=False, n_evaders=16, n_pursuers=16,
-                           obs_range=7, n_catch=2, freeze_evaders=True, tag_reward=0.01, catch_reward=5.0,
+            env = EnvWrap(pursuit_v4.env(max_cycles=500, x_size=18, y_size=8, shared_reward=False, n_evaders=16, n_pursuers=8,
+                           obs_range=7, n_catch=2, freeze_evaders=False, tag_reward=0.01, catch_reward=5.0,
                            urgency_reward=-0.1, surround=True, constraint_window=1.0, render_mode=args.render_mode))
         elif args.env == "checkers":
             env = MaGymEnvWrap(gym.make("ma_gym:Checkers-v0"))
@@ -144,21 +142,7 @@ def gym_loop(args, device, logger):
 
     def create_agent_fn(opt, env):
         # Set default arguments
-        if args.agent == 'maddpg':
-            # args.env = 'ma_gym:Switch2-v2'
-            args.lr_mu = 0.0005
-            args.lr_q = 0.001
-            args.batch_size = 32
-            args.tau = 0.005
-            args.gamma = 0.99
-            args.K_epochs = 1
-            args.chunk_size = 10
-            args.gumbel_max_temp = 10
-            args.gumbel_min_temp = 0.1
-            args.update_target_interval = 4
-            agent = MADDPGGym(opt, env, _device)
-        elif args.agent == 'qmix':
-            # args.env = 'ma_gym:Checkers-v0'
+        if args.agent == 'qmix':
             args.lr = 0.001
             args.batch_size = 32
             args.gamma = 0.99
@@ -170,21 +154,7 @@ def gym_loop(args, device, logger):
             args.chunk_size = 10
             args.update_target_interval = 20
             agent = QMixGym(opt, env, _device)
-        elif args.agent == 'coordqmix':
-            # args.env = 'ma_gym:Checkers-v0'
-            args.lr = 0.001
-            args.batch_size = 32
-            args.gamma = 0.99
-            args.grad_clip_norm = 5
-            args.episodes = 500
-            args.max_epsilon = 0.9
-            args.min_epsilon = 0.1
-            args.K_epochs = 1
-            args.chunk_size = 10
-            args.update_target_interval = 5
-            agent = CoordQMixGym(opt, env, _device)
         elif args.agent == 'vdn':
-            # args.env = 'ma_gym:Checkers-v0'
             args.lr = 0.0001
             args.batch_size = 32
             args.gamma = 0.99
@@ -196,7 +166,6 @@ def gym_loop(args, device, logger):
             args.update_target_interval = 4
             agent = VDNGym(opt, env, _device)
         elif args.agent == 'idqn':
-            # args.env = 'ma_gym:Switch2-v2'
             args.lr = 0.0005
             args.batch_size = 32
             args.gamma = 0.99
@@ -205,7 +174,10 @@ def gym_loop(args, device, logger):
             args.K_epochs = 10
             args.update_target_interval = 20
             agent = IDQNGym(opt, env, _device)
-        else: raise Exception("No agent algorthm found with name "+args.agent)
+        else:
+            # my implementation
+            agent = CoordQMixGym(opt, env, _device)
+
         return agent
 
     proc_env_fn = create_env_fn if args.parallel_envs <= 1 else SubprocVecEnv([create_env_fn for _ in range(args.parallel_envs)])

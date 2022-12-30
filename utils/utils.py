@@ -33,16 +33,6 @@ def mkdir(path):
         os.makedirs(path)
 
 
-def rgb2gray(rgb: np.ndarray) -> np.ndarray:
-    """
-    Converts an rgb image array to a grey image array.
-
-    :param rgb: the rgb image array.
-    :return: the converted array.
-    """
-    return np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.uint8)
-
-
 def get_scheduler(optimizer, opt, last_epoch):
     if opt.lr_policy == 'lambda':
         def lambda_rule(epoch):
