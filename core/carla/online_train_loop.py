@@ -1,15 +1,19 @@
 ﻿import time
 from argparse import Namespace
+from typing import Callable
 
 import gym
 import numpy as np
 import torch
-from macad_gym.carla.multi_env import MultiCarlaEnv
+# from macad_gym.carla.multi_env import MultiCarlaEnv
 
 from core.carla.ppo.agents.ppo_carla import PPOCarla
 from envs.macad.env import NonSignalizedIntersection4Car
+from envs.multiprocessing_env import SubprocVecEnv
 from external.navigation.basic_agent import BasicAgent
 from utils.logger import Logger
+
+global _device
 
 
 def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True):
@@ -43,21 +47,27 @@ def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True)
     return processed_obs, rnn_hxs, comm, done_mask
 
 
-def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logger):
-    actors_id = env.non_auto_actors
+def play_loop(opt: Namespace, env_fn: Callable[[], MultiCarlaEnv], agents_fn: Callable[[Namespace, EnvWrap], object], logger: Logger):
+    # Initialize elements
+    env = env_fn()
+    agents = agents_fn(opt, env)
 
-    for episode in range(agent.start_epoch, opt.episodes):
+    agents_ids = env.non_auto_actors
+
+    for episode in range(agents.start_epoch, opt.episodes):
+        logger.episode_start(episode)
+        step = 0
+
         for retry in range(5):
             try: current_state_obs = env.reset(); break
             except: time.sleep(0.1)  # retry
         if retry == 5: raise Exception("Multiple failures resetting the environment")
-        agent.reset_buffer()
+        agents.reset_buffer()
 
         # setup starting input
-        current_state_obs, recurrent_hidden_states, communication_vector, done_masks = preprocess(current_state_obs, env.get_actors_loc(), agent.buffer.recurrent_hidden_states[0], torch.zeros_like(agent.buffer.masks[0]), agent.buffer.masks[0])
-        agent.fill_buffer(current_state_obs=current_state_obs, step=0)
+        current_state_obs, recurrent_hidden_states, communication_vector, done_masks = preprocess(current_state_obs, env.get_actors_loc(), agents.buffer.recurrent_hidden_states[0], torch.zeros_like(agent.buffer.masks[0]), agents.buffer.masks[0])
+        agents.fill_buffer(current_state_obs=current_state_obs, step=0)
 
-        logger.episode_start(episode)
         # total_rewards = {id: 0.0 for id in actors_id}
         done = {"__all__": False}
 
@@ -66,20 +76,20 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
             # fill rollout and update for n times during an episode depending on the siwwze of rollout storage
             for step in range(opt.rollout_size):
                 with torch.no_grad():
-                    output, log_prob, state_value, next_recurrent_hidden_states = agent.take_action(current_state_obs, recurrent_hidden_states, communication_vector, done_masks)
+                    output, log_prob, state_value, next_recurrent_hidden_states = agents.take_action(current_state_obs, recurrent_hidden_states, communication_vector, done_masks)
                 if opt.force_comm: output[:,-1] = 1
                 actions, comm_mask = output.split(output.size(1)-1, 1)  # just for sake of readability split the output
 
                 try:
-                    next_state_obs, reward, done, info = env.step({id: action.detach().cpu().numpy() for id, action in zip(actors_id, actions)},
-                                                                  {id: comm_value.detach().cpu().numpy() for id, comm_value in zip(actors_id, comm_mask)})  # the env takes both actions and who communicate
+                    next_state_obs, reward, done, info = env.step({id: action.detach().cpu().numpy() for id, action in zip(agents_ids, actions)},
+                                                                  {id: comm_value.detach().cpu().numpy() for id, comm_value in zip(agents_ids, comm_mask)})  # the env takes both actions and who communicate
                 except Exception as e: print('Failed env step: ' + str(e)); exit()
 
 
                 reward = torch.FloatTensor(np.fromiter(reward.values(), np.float32)).unsqueeze(-1)
                 done_masks = torch.FloatTensor(1 - np.fromiter(done.values(), np.int)[1:]).unsqueeze(-1)
 
-                agent.fill_buffer(current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, done_masks)
+                agents.fill_buffer(current_state_obs, recurrent_hidden_states, output, log_prob, state_value, reward, communication_vector, done_masks)
 
                 # preprocess new state
                 current_state_obs, recurrent_hidden_states, communication_vector, done_masks = preprocess(next_state_obs, env.get_actors_loc(), next_recurrent_hidden_states, comm_mask, done_masks)
@@ -91,20 +101,25 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
             if step > 1:
                 # add last state value estimate needed for advantage computing and **UPDATE**
                 with torch.no_grad():
-                    state_value = agent.get_value(current_state_obs, recurrent_hidden_states, communication_vector, done_masks)
-                agent.fill_buffer(state_value=state_value, step=step+1)
+                    state_value = agents.get_value(current_state_obs, recurrent_hidden_states, communication_vector, done_masks)
+                agents.fill_buffer(state_value=state_value, step=step+1)
                 # update with batch of data collected
-                losses = agent.update(valid_steps=step)
-                logger.train_step(step+1, losses, agent.schedulers[0].get_last_lr()[0])
+                losses = agents.update(valid_steps=step)
+                logger.train_step(step+1, losses, agents.schedulers[0].get_last_lr()[0])
             else:  # be careful with that, you are throwing away last step, but also the reward of done
-                agent.buffer.drain(last_step=step+1)
+                agents.buffer.drain(last_step=step+1)
+
         # optionally save models
         if episode != 0 and (episode % opt.agent_save_interval == 0):
             print(f'Saving agent at episode: {episode}.')
-            agent.save_model("policy", episode)
+            agents.save_model("policy", episode)
 
         logger.episode_stop(env.get_stats())
-        agent.update_learning_rate()
+        agents.update_learning_rate()
+
+        # Update
+        if episode != 0 and (episode % opt.update_target_interval == 0):
+            agents.update_target_net()
 
         if episode != 0 and (episode % opt.agent_valid_interval == 0):
             # TODO maybe
@@ -112,14 +127,26 @@ def play_loop(opt: Namespace, env: MultiCarlaEnv, agent: PPOCarla, logger: Logge
             #  2) run eval for n episodes (e.g. 10) saving rewards at end
             #  3) log mean results
             pass
-
+            #     logger.valid_step(1, {})
+            # logger.valid_stop({"rewards": {k: v for k, v in zip(test_env.agents_ids, total_rewards)}},
+            #                   {"evaders": env.get_opponent_num()})
+            # agents.switch_mode('train')
+    env.close()
 
 def carla_loop(args, device, logger):
-    # Create the game environment
-    env = NonSignalizedIntersection4Car()
+    global _device
+    _device = device
 
-    # Play the game, using the agent
-    if not args.shared_multiagent:
-        agents = PPOCarla(args, env, device)
-        play_loop(args, env, agents, logger)
-    env.close()
+    def create_env_fn():
+        # Create the game environment
+        env = NonSignalizedIntersection4Car()
+        return env
+
+    def create_agent_fn(opt, env):
+        agent = PPOCarla(args, env, device)
+        return agent
+
+    proc_env_fn = create_env_fn if args.parallel_envs <= 1 else SubprocVecEnv([create_env_fn for _ in range(args.parallel_envs)])
+
+    # run loop
+    play_loop(args, proc_env_fn, create_agent_fn, logger)

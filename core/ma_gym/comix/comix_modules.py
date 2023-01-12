@@ -146,10 +146,10 @@ class QNet(nn.Module):
         return torch.cat(q_values, dim=1), torch.cat(next_hidden, dim=1)
 
     def sample_action_from_qs(self, out, epsilon):
-        mask = torch.rand((out.shape[0])) <= epsilon
+        mask = torch.rand((out.shape[:2])) <= epsilon
         action = torch.empty((out.shape[0], out.shape[1]), dtype=self.action_dtype).to(self._device)
         action[mask] = torch.randint(0, out.shape[2], action[mask].shape).type_as(action)
-        action[~mask] = out[~mask].argmax(dim=2).type_as(action)
+        action[~mask] = out[~mask].argmax(dim=1).type_as(action)
 
         return action
 
@@ -202,22 +202,12 @@ class Coordinator(nn.Module):
         self.recurrent_size = coord_recurrent_size
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
         _init_fc_ortho = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
-        _init_fc_norm = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0))
 
         self.global_coord_net = _to_ma(RecurrentHead, (self.plan_size*2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # [self, others]
         self.boolean_coordinator = nn.ModuleList([nn.Sequential(
             _init_fc_ortho(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 because takes the bidirectional hxs of global_coord_net
             nn.ReLU(),
             _init_fc_ortho(nn.Linear(coord_recurrent_size, 2))) for id in agents_ids])
-
-        # The role of these modules is equivalent to a QNet but are created as it is for granularity of usage
-        self.coord_net = _to_ma(nn.GRUCell, (plan_size, solo_recurrent_size), {})
-        self.q = nn.ModuleList([_init_fc_norm(nn.Linear(solo_recurrent_size, action_space[id].n)) for id in agents_ids])
-        for name, param in self.coord_net.named_parameters():
-            if 'bias' in name:
-                nn.init.constant_(param, 0)
-            elif 'weight' in name:
-                nn.init.orthogonal_(param)
 
     def to(self, device):
         self._device = device
@@ -227,7 +217,7 @@ class Coordinator(nn.Module):
     def init_hidden(self, batch_size):
         return torch.zeros((self.num_agents, 2, batch_size, self.recurrent_size)).to(self._device)
 
-    def forward(self, action_logits, plans, comm_plans, hiddens, glob_hiddens, eval_coord):
+    def forward(self, plans, comm_plans, glob_hiddens):
         """
         :param action_logits: (req_grad) selfish action logits to modify
         :param plans: (detached) current selfish_plans as starting points
@@ -235,9 +225,8 @@ class Coordinator(nn.Module):
         :param hiddens: (req_grad) selfish hiddens
         :param glob_hiddens: (req_grad) global hiddens (2n,n,b,h)
         :param eval_coord: compute policy value also for the opposite mask
-        :return: coordianted actions between all agents, masks of coordination
         """
-        # Coordination part detached from the rest: it produces only the boolean coord_masks
+        # The coordination part is detached from the rest: it produces only the boolean coord_masks
         glob_rnn_hxs = []
         coord_masks = []
         comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch for t=0 case
@@ -258,43 +247,4 @@ class Coordinator(nn.Module):
         glob_rnn_hxs = torch.cat(glob_rnn_hxs, dim=0)
         coord_masks = torch.cat(coord_masks, dim=0)
 
-        # Compute q modifications on the base of the forced coordination induced by the coordination boolean mask
-        q_values = None  # with the selfish `action_logits` it will allow the propagation of gradients for the policy
-        inv_q_values = None  # this will criticize the mask creation
-        # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
-
-        blind_coord_masks = (torch.argmax(F.gumbel_softmax(coord_masks, tau=0.2, hard=True), -1, keepdim=True) if self.training else torch.argmax(coord_masks, -1, keepdim=True)).bool().detach()  # argmax into bool: 0=no coord
-        q_values = []
-        for i, id in enumerate(self.agents_ids):
-            rnn_hxs = hiddens[:, i].clone()
-            for j in range(self.num_agents):
-                if i == j: continue
-                comm_plans_masked = comm_plans[:, j] * blind_coord_masks[i, j]
-                batch_mask = torch.any(comm_plans_masked, -1).unsqueeze(-1)
-                batch_comm_plans_masked = torch.masked_select(comm_plans_masked, batch_mask).reshape(-1, comm_plans_masked.size(-1))
-                batch_rnn_hxs = torch.masked_select(rnn_hxs, batch_mask).reshape(-1, rnn_hxs.size(-1))
-                if len(batch_comm_plans_masked) > 0:  # certain versions of PyTorch don't like empty batches
-                    batch_rnn_hxs = self.coord_net[i](batch_comm_plans_masked, batch_rnn_hxs)
-                    rnn_hxs = rnn_hxs.masked_scatter(batch_mask, batch_rnn_hxs)
-            q_values.append((action_logits[:, i] + self.q[i](rnn_hxs)).unsqueeze(1))  # NOTE xke questo funzioni il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
-        q_values = torch.cat(q_values, dim=1)
-        # Compute q with opposite mask predictions for coordinator loss
-        if eval_coord:
-            with torch.no_grad():
-                inv_q_values = []
-                for i, id in enumerate(self.agents_ids):
-                    rnn_hxs = hiddens[:, i].clone()
-                    for j in range(self.num_agents):
-                        if i == j: continue
-                        comm_plans_masked = comm_plans[:, j] * ~blind_coord_masks[i, j]
-                        batch_mask = torch.any(comm_plans_masked, -1).unsqueeze(-1)
-                        batch_comm_plans_masked = torch.masked_select(comm_plans_masked, batch_mask).reshape(-1, comm_plans_masked.size(-1))
-                        batch_rnn_hxs = torch.masked_select(rnn_hxs, batch_mask).reshape(-1, rnn_hxs.size(-1))
-                        if len(batch_comm_plans_masked) > 0:
-                            batch_rnn_hxs = self.coord_net[i](batch_comm_plans_masked, batch_rnn_hxs)
-                            rnn_hxs = rnn_hxs.masked_scatter(batch_mask, batch_rnn_hxs)
-                    inv_q_values.append((action_logits[:, i] + self.q[i](rnn_hxs)).unsqueeze(1))
-                inv_q_values = torch.cat(inv_q_values, dim=1)
-        else: inv_q_values = None
-
-        return q_values, inv_q_values, glob_rnn_hxs, coord_masks
+        return coord_masks, glob_rnn_hxs

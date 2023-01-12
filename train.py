@@ -46,7 +46,7 @@ def main():
 
     # Call specific loop
     if args.env == "carla":
-        return carla_loop(args, device, logger)
+        pass        # return carla_loop(args, device, logger)
     else:
         return gym_loop(args, device, logger)
 

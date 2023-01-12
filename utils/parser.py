@@ -128,7 +128,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('-opt', '--optimizer', type=str.lower, default='adam', required=False, choices=['adam', 'rmsprop', 'sgd', 'adagrad', 'adadelta', 'adamax'], help='The optimizer to be used. (default %(default)s).')
         self.parser.add_argument('--lr', type=positive_float, default=0.0005, help='initial learning rate')
         self.parser.add_argument('--lr_q', type=positive_float, default=0.0007, help='initial learning rate')
-        self.parser.add_argument('--lr_co', type=positive_float, default=0.00007, help='initial learning rate')
+        self.parser.add_argument('--lr_c', type=positive_float, default=0.001, help='initial learning rate')
+        self.parser.add_argument('--lr_co', type=positive_float, default=0.00008, help='initial learning rate')
         self.parser.add_argument('--lr_ae', type=positive_float, default=0.001, help='initial learning rate')
         self.parser.add_argument('--lr_niter_frozen', type=int, default=1000, help='[lr_policy=lambda] # of iter at starting learning rate')
         self.parser.add_argument('--lr_niter_decay', type=int, default=1000, help='[lr_policy=lambda] # of iter to linearly decay learning rate to zero')
@@ -146,7 +147,8 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--update_target_interval', type=int, default=5, required=False, help='The discount factor of PPO advantage (default %(default)s).')
         self.parser.add_argument('--mixer', type=int, default=1, required=False, help='The discount factor of PPO advantage (default %(default)s).')
         self.parser.add_argument('--cnn_input_proc', type=int, default=1, required=False, help='The discount factor of PPO advantage (default %(default)s).')
-        self.parser.add_argument('--ae_input_proc', type=int, default=0, required=False, help='The discount factor of PPO advantage (default %(default)s).')
+        self.parser.add_argument('--coord_mask_type', type=str.lower, default='inverse', required=False, choices=['true', 'inverse', 'optout'], help='The discount factor of PPO advantage (default %(default)s).')
+        self.parser.add_argument('--ae_comm', type=int, default=0, required=False, help='The discount factor of PPO advantage (default %(default)s).')
         self.parser.add_argument('--grad_clip_norm', type=int, default=5, required=False, help='The discount factor of PPO advantage (default %(default)s).')
 
         self.isTrain = True
