@@ -21,10 +21,11 @@ def main():
 
     # Init loggers
     if args.wandb:
-        wandb.init(project="TrafficAD", entity="johnminelli")
+        wandb.init(group="CoMix", project="TrafficAD", entity="johnminelli")
         # Init sweep agent configuration
         if args.sweep_id is not None: args.__dict__.update(wandb.config)
-        wandb.config = args
+        # wandb.config = args
+        wandb.config.update(args.__dict__)
         wandb.log({"params": wandb.Table(data=pd.DataFrame({k: [v] for k, v in vars(args).items()}))})
     if args.tensorboard:
         tb_writer = SummaryWriter()
@@ -32,7 +33,8 @@ def main():
     logger = Logger(valid=True, episodes=args.episodes, batch_size=args.batch_size, terminal_print_freq=args.print_freq, tensorboard=tb_writer, wand=args.wandb)
 
     # Set the seed
-    fix_random(args.seed)
+    if args.seed != 0:
+        fix_random(args.seed)
 
     # Setup training devices
     if args.gpu_ids[0] < 0 or not torch.cuda.is_available():

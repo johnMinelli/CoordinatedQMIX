@@ -19,6 +19,10 @@ class BaseAgent(object):
         self.n_agents = len(self.env.agents_ids)
         self.start_epoch = 0
 
+    @property
+    def learning(self):
+        pass
+
     def init_hidden(self):
         pass
 
@@ -49,7 +53,7 @@ class BaseAgent(object):
     def take_action(self, observation, hidden=None, comm=None, dones=None, explore=True):
         pass
 
-    def step(self, state, action, reward, next_state, done):
+    def step(self, state, add_in, action, reward, next_state, done):
         pass
 
     def update_target_net(self):
