@@ -1,0 +1,5 @@
+no_q_coord 		No Q_coord 				5387DD
+no_coord_w 		Coord loss w/o weights 		E57439
+inverse_mask 	Inverse coordination mask 	DA4C4C
+true_mask 		True coordination mask 		3D9E3E
+eval 			Baseline 				EDB732

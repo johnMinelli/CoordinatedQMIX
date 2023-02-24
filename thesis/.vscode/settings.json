@@ -1,0 +1,28 @@
+{
+    "DockerRun.DisableDockerrc": true,
+    "latex-workshop.latex.tools": [{
+        "name": "latexmk",
+        "command": "latexmk",
+        "args": [
+            "-xelatex",
+            "-synctex=1",
+            "-interaction=nonstopmode",
+            "-file-line-error",
+            "%DOC%"
+        ]
+    }
+],
+"DockerRun.DisableAutoGenerateConfig": true,
+"grammarly.selectors": [
+    {
+        "language": "latex",
+        "scheme": "file",
+        "pattern": "example.tex"
+    },
+    {
+        "language": "markdown",
+        "scheme": "file",
+        "pattern": "raw/intro.md"
+    }
+],
+}
