@@ -33,7 +33,7 @@ def main():
     logger = Logger(valid=True, episodes=args.episodes, batch_size=args.batch_size, terminal_print_freq=args.print_freq, tensorboard=tb_writer, wand=args.wandb)
 
     # Set the seed
-    if args.seed != 0:
+    if args.seed != -1:
         fix_random(args.seed)
 
     # Setup training devices
