@@ -41,7 +41,7 @@ class CNNProc(nn.Module):
                 nn.ReLU(),
                 Flatten(),
                 self.init_cnn(nn.Linear(64, hidden_size)),
-                nn.Sigmoid()
+                nn.Tanh()
             )
 
     def forward(self, img):
@@ -56,24 +56,17 @@ class FCProc(nn.Module):
         self.init_fc = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
 
         if size == 0:
-            self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, 128)),
+            self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, self._hidden_size*4)),
                                     nn.ReLU(),
-                                    self.init_fc(nn.Linear(128, 64)),
+                                    self.init_fc(nn.Linear(self._hidden_size*4, self._hidden_size*2)),
                                     nn.ReLU(),
-                                    self.init_fc(nn.Linear(64, self._hidden_size)),
-                                    nn.Sigmoid())
-        elif size == 1:
-            self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, 64)),
-                                    nn.ReLU(),
-                                    self.init_fc(nn.Linear(64, 32)),
-                                    nn.ReLU(),
-                                    self.init_fc(nn.Linear(32, self._hidden_size)),
-                                    nn.Sigmoid())
+                                    self.init_fc(nn.Linear(self._hidden_size*2, self._hidden_size)),
+                                    nn.Tanh())
         else:
-            self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, 16)),
+            self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, self._hidden_size*2)),
                                     nn.ReLU(),
-                                    self.init_fc(nn.Linear(16, self._hidden_size)),
-                                    nn.Sigmoid())
+                                    self.init_fc(nn.Linear(self._hidden_size*2, self._hidden_size)),
+                                    nn.Tanh())
 
     def forward(self, img):
         return self.fc_backbone(img)
@@ -91,7 +84,7 @@ class EncoderDecoder(nn.Module):
             nn.Linear(64, 32),
             nn.ReLU(),
             nn.Linear(32, comm_len),
-            nn.Sigmoid()
+            nn.Tanh()
         )
         self.decoder = nn.Sequential(
             nn.Linear(comm_len, 32),
@@ -176,9 +169,9 @@ class RecurrentHead(nn.Module):
         self.train()
 
     def forward(self, x, rnn_hxs, batch_mask):
-        # move `padding` at right place then cutted when packing
+        # move `padding` (i.e. agents zeroed) at right place then cutted when packing
         compact_seq = torch.zeros_like(x)
-        for i, seq_len in enumerate(batch_mask.sum(0)):
+        for i, seq_len in enumerate(batch_mask.sum(0)):  # cycle over the batch and sum over agents
             compact_seq[:seq_len, i] = x[batch_mask[:,i],i]
         # pack in sequence dimension (the number of agents)
         packed_x = pack_padded_sequence(compact_seq, batch_mask.sum(0).cpu().numpy(), enforce_sorted=False)
@@ -233,15 +226,15 @@ class Coordinator(nn.Module):
         glob_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
         for i in range(self.num_agents):
             # if not torch.any(plans[:,i]): continue  # agent done
-            # others_plans = torch.cat((comm_plans[:, :i], plans[:,i].unsqueeze(1), comm_plans[:, i+1:]), dim=1).detach()  # TODO should I inject the prev decision of communicate? should I make the coordinator conscious of who is coordinating for
+            # others_plans = torch.cat((comm_plans[:, :i], plans[:,i].unsqueeze(1), comm_plans[:, i+1:]), dim=1).detach()  # TODO should I inject the prev decision of communicate? should I make the coordinator conscious of who is coordinating for?
             others_plans = torch.cat([plans[:,i].unsqueeze(1).expand(comm_plans.shape), comm_plans],-1)
             x = others_plans.transpose(0, 1)  # (n,b,h)
             scores, rnn_hxs = self.global_coord_net[i](x, glob_hiddens[i], glob_batch_mask)
-            scores = scores.transpose(0,1)
+            scores = scores.transpose(0, 1)
             glob_rnn_hxs.append(rnn_hxs.unsqueeze(0))  # TODO io uso la GRUCell con sequenze di n_agents, ma l'hidden riesce a capire la ricorrenza delle decisioni a gruppi di n_agents? intrarelazioni in sequenza ed interrelazioni con la decisione finale (se la decisione finale parla dell'agente alla posizione x della sequenza che alla volta dopo sarà sempre alla posizione x)?
 
             coord_mask = []
-            for j in range(scores.size(1)):
+            for j in range(scores.size(1)):  # to optimize by reshape
                 coord_mask.append(self.boolean_coordinator[i](scores[:,j]).unsqueeze(0))
             coord_masks.append(torch.cat(coord_mask, dim=0).unsqueeze(0))
         glob_rnn_hxs = torch.cat(glob_rnn_hxs, dim=0)

@@ -2,84 +2,54 @@ from core.ma_gym.comix.comix_modules import *
 
 
 class QMixer(nn.Module):
-    def __init__(self, observation_space, hidden_size=32, hypernet_layers=1):
+    def __init__(self, observation_space, hidden_size=32):
         super(QMixer, self).__init__()
         self.num_agents = len(observation_space)
         self.state_size = sum(np.prod(_.shape) for _ in observation_space.values())
         self.hidden_size = hidden_size
-        self.hypernet_layers = hypernet_layers
 
-        if hypernet_layers == 0:
-            self.hyper_w_final = nn.Sequential(nn.Linear(self.state_size, self.hidden_size),
-                                           nn.ReLU(),
-                                           nn.Linear(self.hidden_size, self.num_agents))
-        elif hypernet_layers == 1:
-            self.hyper_w_1 = nn.Linear(self.state_size, self.hidden_size * self.num_agents)
-            self.hyper_w_final = nn.Linear(self.state_size, self.hidden_size)
-        elif hypernet_layers == 2:
-            self.hyper_w_1 = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2 * self.num_agents),
-                                           nn.ReLU(),
-                                           nn.Linear(self.hidden_size * 2 * self.num_agents, self.hidden_size * self.num_agents))
-            self.hyper_w_final = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2),
-                                           nn.ReLU(),
-                                           nn.Linear(self.hidden_size * 2, self.hidden_size))
+
+        self.hyper_w_1 = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2 * self.num_agents),
+                                       nn.ReLU(),
+                                       nn.Linear(self.hidden_size * 2 * self.num_agents, self.hidden_size * self.num_agents))
+        self.hyper_w_final = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2),
+                                       nn.ReLU(),
+                                       nn.Linear(self.hidden_size * 2, self.hidden_size))
         self.hyper_b_1 = nn.Linear(self.state_size, self.hidden_size)
         # V(s) instead of a bias for the last layers
         self.V = nn.Sequential(nn.Linear(self.state_size, self.hidden_size),
                                nn.ReLU(),
                                nn.Linear(self.hidden_size, 1))
 
-    def forward(self, agent_qs, states, dones_mask):
+    def forward(self, agent_qs, states):
         bs = agent_qs.size(0)
-        dones_mask = dones_mask.unsqueeze(-1)
-        states = states.reshape(bs, self.num_agents, -1) * dones_mask
+        states = states.reshape(bs, self.num_agents, -1)
 
-        if self.hypernet_layers != 0:
-            states = states.reshape(bs, self.state_size)
-            agent_qs = agent_qs.view(bs, 1, self.num_agents)
-            # First layer
-            w1 = torch.abs(self.hyper_w_1(states))
-            b1 = self.hyper_b_1(states)
-            w1 = w1.view(bs, self.num_agents, self.hidden_size)
-            b1 = b1.view(bs, 1, self.hidden_size)
-            hidden = F.elu(torch.bmm(agent_qs, w1) + b1)
-            # Second layer
-            w_final = torch.abs(self.hyper_w_final(states))
-            w_final = w_final.view(-1, self.hidden_size, 1)
-            v = self.V(states).view(-1, 1, 1)
-            # Compute final output
-            y = torch.bmm(hidden, w_final) + v
-            # Reshape and return
-            q_tot = y.view(-1, 1)
+        states = states.reshape(bs, self.state_size)
+        agent_qs = agent_qs.view(bs, 1, self.num_agents)
+        # First layer
+        w1 = torch.abs(self.hyper_w_1(states))
+        b1 = self.hyper_b_1(states)
+        w1 = w1.view(bs, self.num_agents, self.hidden_size)
+        b1 = b1.view(bs, 1, self.hidden_size)
+        hidden = F.elu(torch.bmm(agent_qs, w1) + b1)
+        # Second layer
+        w_final = torch.abs(self.hyper_w_final(states))
+        w_final = w_final.view(-1, self.hidden_size, 1)
+        v = self.V(states).view(-1, 1, 1)
+        # Compute final output
+        y = torch.bmm(hidden, w_final) + v
+        # Reshape and return
+        q_tot = y.view(-1, 1)
 
-            return q_tot
-        else:
-            states = states.reshape(bs, self.state_size)
-            agent_qs = agent_qs.view(bs, 1, self.num_agents)
-            # Only second layer
-            w_final = torch.abs(self.hyper_w_final(states))
-            w_final = w_final.view(-1, self.num_agents, 1)
-            v = self.V(states).view(-1, 1, 1)
-            # Compute final output
-            y = torch.bmm(agent_qs, w_final) + v
-            # Reshape and return
-            q_tot = y.view(-1, 1)
-
-            return q_tot
+        return q_tot
 
     def eval_states(self, states):
-        if self.hypernet_layers != 0:
-            states = states.reshape(-1, self.state_size)
-            # Scaling weights used in bmm
-            w1 = torch.abs(self.hyper_w_1(states))
+        states = states.reshape(-1, self.state_size)
+        # Scaling weights used in bmm
+        w1 = torch.abs(self.hyper_w_1(states))
 
-            return w1.reshape(-1, self.num_agents, self.hidden_size)
-        else:
-            states = states.reshape(-1, self.state_size)
-            # Scaling weights used in bmm
-            w = torch.abs(self.hyper_w_final(states))
-
-            return w
+        return w1.reshape(-1, self.num_agents, self.hidden_size)
 
 
 class QPolicy(nn.Module):
@@ -101,14 +71,14 @@ class QPolicy(nn.Module):
         self.obs_size = np.prod(self.obs_shape)
         self.action_space = action_space
         self.action_dtype = torch.int if list(action_space.values())[0].__class__.__name__ == 'Discrete' else torch.float32
-        self.hidden_size = model_params.get("hidden_size", 64)
+        self.hidden_size = self.solo_recurrent_size = model_params.get("hidden_size", 64)
         self.coord_recurrent_size = model_params.get("coord_recurrent_size", 256)
         self.shared_comm_ae = model_params.get("ae_comm", False)
         self.cnn_input_proc = model_params.get("cnn_input_proc", False)
         self.eval_coord_mask = model_params.get("eval_coord_mask", False)
+        self.min_epsilon = model_params.get("min_epsilon", 0.1)
 
         self.action_size = list(self.action_space.values())[0].n  # this breaks action diversity for agents
-        self.solo_recurrent_size = self.hidden_size
         self.plan_size = self.num_agents+self.hidden_size+self.action_size
         self.ids_one_hot = torch.eye(self.num_agents).to(self._device)
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
@@ -152,8 +122,7 @@ class QPolicy(nn.Module):
 
     def get_coordinator_parameters(self):
         coordinator_net_params = []
-        coordinator_net_params += self.ma_coordinator.global_coord_net.parameters()
-        coordinator_net_params += self.ma_coordinator.boolean_coordinator.parameters()
+        coordinator_net_params += self.ma_coordinator.parameters()
 
         return coordinator_net_params
 
@@ -212,7 +181,10 @@ class QPolicy(nn.Module):
                 if len(batch_comm_plans_masked) > 0:  # certain versions of PyTorch don't like empty batches
                     batch_rnn_hxs = self.co_q_net[i](batch_comm_plans_masked, batch_rnn_hxs)
                     rnn_hxs = rnn_hxs.masked_scatter(batch_mask, batch_rnn_hxs)
-            q_values.append((action_logits[:, i] + self.co_q_linear[i](rnn_hxs)).unsqueeze(1))  # NOTE xke questo funzioni il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
+            action_logits_coord = action_logits[:, i].clone()
+            if not torch.equal(rnn_hxs, hiddens[:, i]):
+                action_logits_coord[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)] += self.co_q_linear[i](rnn_hxs[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)])
+            q_values.append(action_logits_coord.unsqueeze(1))  # NOTE xke questo funzioni il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
         q_values = torch.cat(q_values, dim=1)
 
         return q_values
@@ -222,11 +194,9 @@ class QPolicy(nn.Module):
         assert not (comm_plans is None and coord_masks is None) or (comm_plans is None and coord_masks is None), "The arguments combination passed is not valid."
         ae_loss = 0
         distance_loss = 0
-        # mask hidden
-        bs = input.size(0)
-        dones_mask = dones_mask.unsqueeze(-1)
 
         # shared input processing
+        bs = input.size(0)
         if self.cnn_input_proc:
             input = input.reshape(bs * self.num_agents, *self.obs_shape).transpose(-1, -3)
         else:
@@ -236,7 +206,7 @@ class QPolicy(nn.Module):
 
         # --- Solo action ---
         solo_qs, rnn_hxs = self.ma_q(x, rnn_hxs)
-        solo_actions = self.ma_q.sample_action_from_qs(solo_qs, epsilon=0.15)  # greedy action selection
+        solo_actions = self.ma_q.sample_action_from_qs(solo_qs, epsilon=self.min_epsilon)  # greedy action selection
         solo_actions_one_hot = torch.zeros_like(solo_qs).scatter_(-1, solo_actions.type(torch.int64).unsqueeze(-1), 1.)
 
         # --- Communication ---
@@ -260,26 +230,27 @@ class QPolicy(nn.Module):
         if coord_masks is None:
             # produce mask of coordination from comm_msgs
             coord_masks, glob_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, glob_rnn_hxs)
-            if self.training:  # mask here is for `coord_masks` output variable, while for the `modify_qs` step, `proc_comm` is masked
-                distance_loss = (-torch.log(torch.clip(torch.abs(coord_masks[..., 0] - coord_masks[..., 1]), 0, 1))).sum() / self.num_agents * 0.1
-                coord_masks = F.gumbel_softmax(coord_masks, hard=True, dim=-1) * dones_mask.transpose(1,0).unsqueeze(0)  # add randomness proportional to logits relative value
-            blind_coord_masks = torch.argmax(coord_masks, -1, keepdim=True).bool().detach()  # argmax into bool: 0=no coord
+            done_matrix = dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0)
+            if self.training:  # mask here is for `coord_masks` output variable
+                distance_loss = ((-torch.log(torch.clip(torch.abs(coord_masks[..., 0] - coord_masks[..., 1]), 0, 1))) * done_matrix).sum()/dones_mask.sum()**2
+                coord_masks = F.gumbel_softmax(coord_masks, hard=True, dim=-1) * done_matrix.unsqueeze(-1)  # add randomness proportional to logits relative value
+            blind_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord
         else:
             blind_coord_masks = coord_masks.permute(1,2,0,3)
         # use coordination mask to 'communicate' (selectively allow communication) and improve your choices
-        qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm, blind_coord_masks) * dones_mask
+        qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm, blind_coord_masks)
         if eval_coord:
             with torch.no_grad():
                 if self.eval_coord_mask == "true":
-                    inv_qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm,torch.ones_like(blind_coord_masks).bool()) * dones_mask
+                    inv_qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "inverse":
-                    inv_qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm, ~blind_coord_masks) * dones_mask
+                    inv_qs = self._modify_qs(solo_qs, rnn_hxs, proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "optout":
                     inv_qs = []
                     for i in range(self.num_agents):
                         mask = blind_coord_masks.clone()
                         mask[:, i] = ~mask[:, i]
-                        inv_qs.append((self._modify_qs(solo_qs, rnn_hxs, proc_comm, mask) * dones_mask).unsqueeze(2))
+                        inv_qs.append(self._modify_qs(solo_qs, rnn_hxs, proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
                     inv_qs = torch.cat(inv_qs, dim=2)
         else:
             inv_qs = None
@@ -298,5 +269,5 @@ class QPolicy(nn.Module):
         """Off policy call returning Q of given actions"""
         q, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
         # gather q of action passed
-        q_a = q.gather(2, actions.unsqueeze(-1).long()).squeeze(-1)
+        q_a = q.gather(2, actions.long()).squeeze(-1)
         return q_a, rnn_hxs, glob_rnn_hxs
