@@ -366,14 +366,21 @@ In evaluating the efficacy of the proposed method in comparison to the baselines
 Given the simplicity of the task and its low potential for misunderstandings between agents, IC3Net's straightforward communication mechanism proves to be the most effective among the three methods compared. After about one thousand updates, the agents have already learnt almost deterministic behaviour and consistently obtain optimal rewards. CoMix follows, with slightly lower results, while ATOC struggles with the task. A deeper analysis of the latter reveals that in the execution, all agents tend to adopt the same action selection policy, moving in the same room. This usually ensures that at least two agents reach their intended target, while the others rarely show any further intention of turning back in the right direction. The behaviour is likely caused by weight sharing used for all components, which was not even mitigated by the introduction of an ID in the policy computation. On the other hand, IC3Net reaches optimal performance, likely because the task resolution requires low variability and therefore does not necessitate strong communication skills. If the task becomes too easy, the policy can adopt a deterministic action sequence, and the communication channel can become secondary. The CoMix method of communication and coordination maintains variability in the choices, which often leads to slower resolution but still enables all agents to reach their targets with high scores.
 
 \textbf{Predator-Prey} 
+Draft waiting for final results
 
 
+\section{Ablation Study}\label{ablation}
 
 
+  \subsection{Performance Analysis}\label{analisis}
 
-\section{Ablation study}\label{ablation}
+  \subsection{Communication Analysis}\label{analisis}
 
 
+\section{Conclusions}\label{conclusions}
+
+
+  \subsection{Limitations}\label{limitations}
 
 
 
