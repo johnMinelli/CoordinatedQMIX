@@ -275,17 +275,26 @@ The propoed method instead show very good abilities by agents, in maintaining gr
 <!--not only shows a very good learning curve but also show capabilities of being able to coordinate succesfully the agents at different environment scales. (are results better c respect to b respect to a?)
 this demonstrate practical ability in (abstract abilities?)-->
 
+
+
+Captions
+
+<!-- explanation metric, difference of training, environment, how many experiments per test/method -->
+
+<!-- in ablation average over n runs average over last n steps -->
+
+
 ### Ablation study
 <!-- We conclude our evaluation by measuring the impact of each component in our pipeline through an ablation study carried out on the two environments -->
 <!-- Based on the results obtained, we conducted a detailed analysis of the performance of each coordination strategy. -->
 
-Building upon the quantitative and qualitative analysis presented in the comparison against other methods, this study delves deeper into the factors that contribute to the success of the proposed method. The test has been repeated in both environments -- only in the smaller version in the case of predator prey to limit the computational resource usage -- considering the final proposal (baseline) against variants of the architecture and flavours of training methodologies.
+Building upon the quantitative and qualitative analysis presented in the comparison against other methods, this study delves deeper into the factors that contribute to the success of the proposed method. The test has been repeated in both environments -- only in the smaller version in the case of predator-Prey to limit the computational resource usage -- considering the final proposal (baseline) against variants of the architecture and flavours of training methodologies.
 
 - \textbf{$Q_{coord}^-$}, uses the base configuration for agents without communication abilities. Agents are required to understand the environment dynamics thoroughly to achieve their objective, as centralized training is the only mechanism for information sharing.
 - \textbf{$L_{coord} \text{ w/o } w$}, does not use the weights provided by the QMix framework for the computation of the Coordinator loss. This variant shows the performance of the base method if extrapolated by the current CTDE framework.
 - $mask^{true}$ and $mask^{inverse}$ are alternative training methods for the Coordinator. The baseline implementation is compared with these two approaches: using an all-true mask of coordination and adopting a single-inference full inversion of probabilities, as explained in \ref{method}.
 
-#### Analysis
+#### Analysis (1)
 Figure X put in perspective the average results obtained after an equivalent time of training for each variant considered. As previously described we considered Tot_reward as metric of success for switch and the number of capture in predator-prey. The comparison provide also very interesting insights about how the different choices affect the training of the agents and therefore the strategies developed.
 In the 'switch' environment, we can see 'inverse' and 'no_w' being able to demonstrate the same coordination performances as the 'baseline'. However, they apparently require more training steps respect the baseline: they show a lower 'tot_reward', and in both cases we can identify situations in which the agents struggle in reaching their position due to misbheaviour of the single but not for coordination impediments. On the other hand we see 'true' obtaining very good results even if with a slower convergence and a weaker coordination \ref{other graph}. Interestingly, while the strategy of the baseline allows agents to incrementally learn and find their way in the environment, 'true' does not report successes initially. It is because this method of supervision incentivized to consider everyone's intention instead of restricting the collaboration space to the local situation of understanding. 
 <!-- (add example of agents not able to agree on who should pass first and this hinder the final result) -->
@@ -298,5 +307,11 @@ The absence of communication capabilities resulted in an apparent lack of coordi
 To further analyze the strategies' performance, we examine the Coordinator module's training loss. The 'no_w' strategy exhibited high spikes in training loss, while 'true' and 'inverse' strategies showed more stable learning. However, it's possible that the stability may have been due to ineffective strategies, as both 'true' and 'inverse' had lower results compared to the 'baseline' and 'no_w' strategies.
 From a general perspective, it can be inferred that the inclusion of an additional term for coordination in the action selection process is crucial for achieving improved performance. With respect to the tested learning strategies, it can be observed that except for 'true', which is highly situation and environment-dependent, the others can be considered as simplified variants of the baseline strategy, which result in a slower achievement of results.
 
-### Communication
 
+
+
+### Communication (1)
+To conclude our analysis, we investigated the communication mechanism of CoMix by analyzing the evolution of the predicted communication masks. The success of coordination was determined by comparing the state-action values predicted, with respect to the values obtained with the alternative coordination mask in the computation of the loss of the coordinator. The good/bad ratio of coordination, shown in Figure X, indicates the percentage of agents making correct predictions per each step. The metric increasing for all ablated strategies shows promising results, with the base method achieving the maximum value. However, although the proposed strategy is generally applicable, adopting a learning process for the Coordinator tailored to the specific environment dynamics could potentially yield better results (e.g., in a fully cooperative environment could be more proficient training against the maximum amount of information and then learn to filter out irrelevant ones at each step).
+Another important finding is given by the number of times agents coordinate with others during training. In the Switch environment, we observe a decrease in this value, whereas in the Predator-Prey environment, the value remains almost constant and higher overall. This finding aligns with the intuition, as the latter environment requires all four agents to coordinate to capture prey.
+<!--TODO should i putt the graph? Should I divide by ablation flavours? the description is valid for optout and slightly also for no_w-->
+Furthermore, the implementation of CoMix provides intrinsic interpretability in the agents' action choices. We can trace an action back to single interactions with other agents or due to the agents' self-imposed objectives. For instance, in the Switch environment, when a single agent remains, its actions are not influenced by others, and $Q_{coord}$ becomes 0. In the case of the Predator-Prey environment, we can observe the norm of $Q_{self}$ and $Q_{coord}$ to determine whether an agent is acting primarily following its own will or adopting a strategy towards coordination.
