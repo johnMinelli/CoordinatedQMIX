@@ -8,6 +8,7 @@
 \usepackage{amsmath}
 \usepackage{amsfonts}
 \usepackage{siunitx}
+\usepackage{subfigure}
 
 \usepackage[backend=biber,style=trad-plain, sorting=nty,firstinits=true]{biblatex}
 \addbibresource{citations.bib}
@@ -272,8 +273,8 @@ The coordination module is responsible for determining the relevance of other ag
   \begin{equation}
     \textbf{z}_i=\{<m_i,m_1>, \dots ,<m_i,m_n>\}^{-<m_i,m_i>}
   \end{equation}
-  \begin{equation}
-    Coord(\textbf{z}_i)=\textbf{c}_i
+  \begin{equation}\label{eq:comm-mask}
+    \textbf{c}_i=Coord(\textbf{z}_i)
   \end{equation}
   $ \text{ where } \textbf{c}_i=\{c_{i,1},\dots,c_{i,n}\}^{-c_{i,i}}$
   $\text{ and } c_{i,j}= 
@@ -281,7 +282,7 @@ The coordination module is responsible for determining the relevance of other ag
         1 & \text{if agent } i \text{ coordinate with agent } j,\\
         0 & \text{otherwise}
     \end{cases}$
-  \begin{equation}
+  \begin{equation}\label{eq:comm-messages}
     \bar{\textbf{m}}_i=\textbf{m} \odot \textbf{c}_i
   \end{equation}
 As previously proposed in \cite{Jiang2018LearningAC}, the module for this reasoning is implemented using a BiGRU layer, in order to take into account the intentions of all other agents under the same circumstances, but also in a reciprocal relation, \(\textbf{z}_i\). The individual scores produced by this layer are then used to calculate an independent probability of communication through a two-way softmax.
@@ -313,14 +314,18 @@ Despite its limitations in terms of representational ability due to the monotoni
 \subsection{Loss functions}\label{loss}
 The agents' Q policy network is trained end-to-end with the error propagation being able to flow between the two reasoning processes by means of the hidden state shared. The rule of update for their parameters \(\theta^Q\) follows the common implementation of QMIX \cite{Rashid2018QMIXMV}, with the computation of a temporal difference error:
   \begin{equation}
-    L(\theta^Q) = |y^{TOT} - Q^{TOT}(\textbf{s}, \textbf{q}; \theta^Q)|,
+    L_Q(\theta^Q) = |y^{TOT} - Q^{TOT}(\textbf{s}, \textbf{q}; \theta^Q)|,
   \end{equation}
 where $y^{TOT} = \textbf{r} + \gamma \max\limits_{\textbf{q}'}Q^{TOT}(\textbf{s}', \textbf{q}'; \theta^{Q}{'})$ and \(\theta^Q\), \(\theta^{Q}{'}\) are respectively the parameters of the online policy network and target policy network periodically copied from \(\theta^Q\) as in standard DDQN \cite{Van2016deep}. Note that compared to an individual network per agent, having a centralised function leads to considerably lower variance in policy gradient estimates since it takes into account actions from all agents. At test time, this is not needed, and policy execution is fully decentralised.
 
-In designing an efficient learning schema for the coordination module, different options were evaluated following the same general intuition (TODO need testing time to understand if it is worth putting that in the ablation). Since the probability of communication produced by the single agent for each other sees its effects in a modified set of values for the state-action pairs, we can effectively measure it in an improvement or decrease in action performance by assuming an optimal estimate of the state-action value from the policy. Therefore, we can define the formula of update of the Coordinator's parameters as a clipped delta between the maximum state-action value obtained with filtered messages \(\bar{\textbf{m}}_i\) from the predicted mask of coordination with respect to the alternative estimated value obtained from messages filtered with inverted probabilities of communication
-\(\tilde{\textbf{m}}_i = \textbf{m} \odot (1- Coord(\textbf{r}_i; \theta^C))\).
+In designing an efficient learning schema for the coordination module, different options were evaluated following the same general intuition (TODO need testing time to understand if it is worth putting that in the ablation). Since the probability of communication produced by the single agent for each other sees its effects in a modified set of values for the state-action pairs, we can effectively measure it in an improvement or decrease in action performance by assuming an optimal estimate of the state-action value from the policy. Therefore, we can define the formula of update of the Coordinator's parameters as a clipped delta between the maximum state-action value obtained with filtered messages \(\bar{\textbf{m}}_i\) from the predicted mask of coordination with respect to the alternative estimated value obtained from messages filtered with inverted probabilities of communication. That is $\tilde{\textbf{c}}_i = (1- Coord(\textbf{z}_i; \theta^C))$ and $\tilde{\textbf{m}}_i = \textbf{m} \odot \tilde{\textbf{c}}_i$ from Eq. \ref{eq:comm-mask} and Eq. \ref{eq:comm-messages}, 
+.
   \begin{equation}
-    L(\theta^C)= \sum^n_{i=1} w_i \Delta Q_i = \sum^n_{i=1} w_i \max(0,\max_{a_i}Q_i(s_i,h_i,\tilde{\textbf{m}}_i,a_i) - \max_{a_i}Q_i(s_i,h_i,\bar{\textbf{m}}_i,a_i))
+    \begin{split}
+    L_C(\theta^C) &= \sum^n_{i=1} w_i \Delta Q_i
+    \\
+    &=\sum^n_{i=1} w_i \max(0,\max_{a_i}Q_i(s_i,h_i,\tilde{\textbf{m}}_i,a_i) - \max_{a_i}Q_i(s_i,h_i,\bar{\textbf{m}}_i,a_i))
+    \end{split}
   \end{equation}
 
 Following this reasoning, we can further improve the method at the cost of additional computation by performing $n-1$ inferences of the Q function, each considering a set of different messages. Instead of computing the Q value considering communicating with the opposite set of agents -- with respect to the predicted one -- we can compute an averaged expectation of the state action value, taking into account the advantage of reversing the communication probability per each single agent. Although this training implementation is much more expensive, it allows for improved results, especially when many agents are present. The choice is discussed further in the section dedicated to the ablation study (See \ref{ablation}).
@@ -360,6 +365,17 @@ The second testing environment (Fig. \ref{fig:pursuit}) is an instance of the \t
 
 
 \section{Results}\label{results}
+
+\begin{figure}
+  \centering
+  \subfigure[\centering Switch]{\includegraphics[width=5cm]{images/train_switch.png}}
+  \hfill
+  \subfigure[\centering Predator-Prey]{\includegraphics[width=5cm]{images/train_pursuit.png}}
+  \caption{\textbf{Training comparison.} Results of comparison between IC3Net, ATOC, and CoMix methods in the two environments of study. The data represented are the average results collected from 10 experiments with random seed initialization. The methods are compared per equivalent number of updates on the base of a tot_rewards, and b respect the number of capture in an epsiode. To be noted that the IC3Net use online learning in contrapposition to ATOC and CoMix and therefore the number of step seen by the first has a magnitude two of two order bigger than the others.}
+  \label{fig:training}
+\end{figure}
+
+
 In evaluating the efficacy of the proposed method in comparison to the baselines, it is crucial to account for the disparity in the training methodologies employed. Specifically, IC3Net utilizes an on-policy training approach, in contrast to CoMix and ATOC. Furthermore, the latter two are trained with epsilon decay action selection, which allows for a more thorough exploration of the action space, but also leads to greater variance in the interactions with the environment.
 
 \textbf{Switch} Figure X displays the learning curve of the CoMix method and the two baseline approaches in terms of the total reward received by the agents in an episode. A higher value indicates not only the agents' capability to reach their respective targets, but also their ability to do so in a minimal number of steps, since the reward decays from 10 to 5 during the agents' lifespan.
@@ -371,18 +387,32 @@ Draft waiting for final results
 
 \section{Ablation Study}\label{ablation}
 
+\section{Results}\label{results}
 
-  \subsection{Performance Analysis}\label{analisis}
+\begin{figure}
+  \centering
+  \subfigure[\centering Switch]{\includegraphics[width=5cm]{images/ablation_switch.png}}
+  \hfill
+  \subfigure[\centering Predator-Prey]{\includegraphics[width=5cm]{images/ablation_pursuit.png}}
+  \caption{\textbf{Ablation comparison.} Results of comparison between different flavours of implementation against the proposed method used as baseline. The data presented are the average results obtained from 3 experiments on both environments then averaged again on the last 10 (a) and 5 (b) episodes -- after an equivalent amount of training.
+  \label{fig:ablation-res}
+\end{figure}
 
-  \subsection{Communication Analysis}\label{analisis}
+  \subsection{Performance Analysis}\label{res-analysis}
 
+  \subsection{Communication Analysis}\label{comm-analysis}
+
+  \begin{figure}
+    \centering
+    \includegraphics[height=2cm]{images/ablation_comm_ratio.png}
+    \caption{\textbf{Correct communication's ratio}} Ratio between the number of agents who predict state-action values higher or lower in comparison to their loss target. Being such value directly affected by the communication mask, we can read it as the ratio of agents correctly communicating. The graph reports the evolution for Switch environment. 
+    \label{fig:ablation-com}
+  \end{figure}
 
 \section{Conclusions}\label{conclusions}
 
 
   \subsection{Limitations}\label{limitations}
-
-
 
 	\appendix
 	
