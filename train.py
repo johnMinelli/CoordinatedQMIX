@@ -47,10 +47,7 @@ def main():
         device = torch.device("cuda")
 
     # Call specific loop
-    if args.env == "carla":
-        pass        # return carla_loop(args, device, logger)
-    else:
-        return gym_loop(args, device, logger)
+    gym_loop(args, device, logger)
 
 
 if __name__ == '__main__':

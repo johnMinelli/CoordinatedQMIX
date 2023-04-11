@@ -29,6 +29,10 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
 
     agents_ids = env.agents_ids
 
+    # logger.episode_start(opt.episodes-1)
+    # logger.train_step(12700, {}, {})
+    # logger.episode_stop({"rewards": {}}, {"success": 0})
+
     for episode in range(agents.start_epoch, opt.episodes):
         warmup_ended = agents.learning
         if warmup_ended: logger.episode_start(episode)
