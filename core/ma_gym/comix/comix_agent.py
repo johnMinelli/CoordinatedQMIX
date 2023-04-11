@@ -1,14 +1,13 @@
 ﻿import glob
 import os
-from contextlib import nullcontext
 
 import torch.optim as optim
 from gym import Env
 from path import Path
 
 from core.base_agent import BaseAgent
+from core.ma_gym.roll_storage import RolloutStorage
 from core.ma_gym.comix.comix_net import *
-from core.ma_gym.replay_buffer import ReplayBuffer
 from utils.utils import print_network, get_scheduler, mkdirs
 
 
@@ -17,20 +16,19 @@ class CoordQMixGymAgent(BaseAgent):
 
     def __init__(self, opt, env: Env, device: torch.device):
         super().__init__(opt, env, device)
-        self.model_params = {"eval_coord_mask": opt.coord_mask_type, "ae_comm": bool(opt.ae_comm), "hidden_size": 32, "coord_recurrent_size": 64, "ae_comm_size": 16, "input_proc_size": 1, "cnn_input_proc": bool(opt.cnn_input_proc)}
-        self.mixer_params = {"hidden_size": 32}
+        self.model_params = {"eval_coord_mask": opt.coord_mask_type, "ae_comm": bool(opt.ae_comm), "hidden_size": opt.hi, "coord_recurrent_size": opt.hc, "ae_comm_size": 16, "input_proc_size": opt.hs, "cnn_input_proc": bool(opt.cnn_input_proc), "min_epsilon": opt.min_epsilon}
+        self.mixer_params = {"hidden_size": opt.hm}
 
         # Setup multi agent modules (dimension with n agents)
         self.q_policy = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.model_params).to(device)
         self.q_policy_target = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.model_params).to(device)
         self.q_policy_target.load_state_dict(self.q_policy.state_dict())
         # no need of having a target for mask predictor module
-        self.q_policy_target.ma_coordinator.global_coord_net = self.q_policy.ma_coordinator.global_coord_net
-        self.q_policy_target.ma_coordinator.boolean_coordinator = self.q_policy.ma_coordinator.boolean_coordinator
-        self.mix_net = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"], hypernet_layers=opt.mixer).to(device)
-        self.mix_net_target = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"], hypernet_layers=opt.mixer).to(device)
+        self.q_policy_target.ma_coordinator = self.q_policy.ma_coordinator
+        self.mix_net = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"]).to(device)
+        self.mix_net_target = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"]).to(device)
         self.mix_net_target.load_state_dict(self.mix_net.state_dict())
-        self.memory = ReplayBuffer(opt.max_buffer_len, device)
+        self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
 
         # Load or init
         self.training = opt.isTrain
@@ -53,7 +51,7 @@ class CoordQMixGymAgent(BaseAgent):
             policy_net_params += self.q_policy.get_policy_parameters()
             policy_net_params += self.mix_net.parameters()
 
-            self.optimizer_policy = optim.Adam(policy_net_params, lr=opt.lr_q)
+            self.optimizer_policy = optim.Adam(policy_net_params, lr=opt.lr_q, weight_decay=opt.weight_decay)
             self.optimizer_coordinator = optim.Adam(self.q_policy.get_coordinator_parameters(), lr=opt.lr_co)
             self.optimizers.append(self.optimizer_policy)
             self.initial_lr.append(opt.lr_q)
@@ -73,17 +71,29 @@ class CoordQMixGymAgent(BaseAgent):
         print_network(self.mix_net)
 
         # train cycle params
-        self.K_epochs = opt.K_epochs  # 10
+        self.no_op = env.no_op
+        self.K_epochs = opt.K_epochs  # 1
         self.batch_size = opt.batch_size
         self.warm_up_steps = opt.min_buffer_len
         self.gamma = opt.gamma
-        self.chunk_size = opt.chunk_size  # 10
+        self.chunk_size = opt.chunk_size  # 3,10
         self.grad_clip_norm = opt.grad_clip_norm  # 5
-        self.lambda_coord = 0.1
-        self.coord_loss = 0
+        self.epsilon = opt.max_epsilon
+        self.decay_epsilon = opt.decay_epsilon
+        self.lambda_distance = opt.lambda_distance
+        self.lambda_coord = opt.lambda_coord
+        self.lambda_q = opt.lambda_q
+        self.tau = opt.tau
+        self.coord_loss = torch.zeros(1, device=device)
+        self.ae_loss = torch.zeros(1, device=device)
         self.coord_stats = {}
-        self.ae_loss = 0
+        self.updates = 0
+
         # assert self.warm_up_steps > (self.batch_size * self.chunk_size) * 2, "Set a the min buffer length to be greater then `(batch_size x chunk_size)x2` to avoid overlappings"
+
+    @property
+    def learning(self):
+        return self.memory.size() >= self.warm_up_steps
 
     def init_hidden(self):
         return self.q_policy.init_hidden()
@@ -131,48 +141,54 @@ class CoordQMixGymAgent(BaseAgent):
         return epoch + 1
 
     def decay_exploration(self, episode):
-        self.epsilon = max(self.opt.min_epsilon, self.opt.max_epsilon - (self.opt.max_epsilon - self.opt.min_epsilon) * (episode / (0.6 * self.opt.episodes)))
+        self.epsilon = max(self.opt.min_epsilon, self.opt.max_epsilon - (self.opt.max_epsilon - self.opt.min_epsilon) * (episode / (self.decay_epsilon * self.opt.episodes)))
 
-    def take_action(self, observation, hidden=None, dones=None):
+    def _soft_update(self):
+        for param_target, param in zip(self.q_policy_target.get_policy_parameters(), self.q_policy.get_policy_parameters()):
+            param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
+        for param_target, param in zip(self.mix_net_target.parameters(), self.mix_net.parameters()):
+            param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
+
+    def take_action(self, observation, hidden, dones):
+        observation = observation.unsqueeze(0)
         hidden, coordinator_hidden = hidden
+        dones_mask = (1-dones).unsqueeze(0)
         co_q_input = None
-
         if not self.training:
-            actions, hidden, coordinator_hidden = self.q_policy.take_action(observation, hidden, coordinator_hidden, 1-dones, self.opt.min_epsilon)
+            actions, hidden, coordinator_hidden = self.q_policy.take_action(observation, hidden, coordinator_hidden, dones_mask, self.opt.min_epsilon)
         else:
             # Act then do on-policy optimization for Coordinator and Autoencoder
-            q_out, hidden, coordinator_hidden, inv_q_out, coord_masks, co_q_input, mid_losses = self.q_policy(observation, hidden, coordinator_hidden, 1-dones, eval_coord=True)  # explore both actions and coordination
+            q_out, hidden, coordinator_hidden, inv_q_out, coord_masks, co_q_input, mid_losses = self.q_policy(observation, hidden, coordinator_hidden, dones_mask, eval_coord=True)  # explore both actions and coordination
             actions = self.q_policy.ma_q.sample_action_from_qs(q_out, self.epsilon).squeeze().detach()
 
             distance_loss, ae_loss = mid_losses
-            # optimize the coordinator while acting using the max q differences given by a mask respect its inverse
-            loss_coordinator = distance_loss
-            max_inv_q_a = inv_q_out.max(dim=-1)[0]
-            max_q_a = q_out.max(dim=-1)[0]
-            coord_masks = coord_masks.transpose(2, 0)  # F.softmax(coord_masks.transpose(2, 0), dim=-1)
-            w = self.mix_net_target.eval_states(observation).detach()
-            if self.q_policy.eval_coord_mask == "optout":
-                if self.opt.mixer == 0: raise Exception("The dev messed up")
-                inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w.unsqueeze(2), -1)
-                pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
-                loss_coordinator += torch.sum(torch.sum(
-                    nn.ReLU()(inv_pred_q_s - pred_q_s.unsqueeze(-1).expand(max_inv_q_a.shape)).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1))
-            else:
-                if self.opt.mixer != 0:
+
+            if self.memory.size() >= self.warm_up_steps:  # avoid coordinator optimization while Q is still dumb
+                # optimize the coordinator while acting using the max q differences given by a mask respect its inverse
+                dones_mask = dones_mask.squeeze(-1)
+                loss_coordinator = (distance_loss * self.lambda_distance)
+                max_q_a = q_out.max(dim=-1)[0] * dones_mask
+                coord_masks = coord_masks.transpose(2, 0)  # F.softmax(coord_masks.transpose(2, 0), dim=-1)
+                w = self.mix_net_target.eval_states(observation).detach()
+                if self.q_policy.eval_coord_mask == "optout":
+                    max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask.unsqueeze(-1) * dones_mask.unsqueeze(-2)
+                    inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w.unsqueeze(2), -1)
+                    pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
+                    loss_coordinator += torch.sum(torch.sum(
+                        nn.ReLU()(inv_pred_q_s - pred_q_s.unsqueeze(-1).expand(max_inv_q_a.shape)).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1))
+                else:
+                    max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w, -1)
                     pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
-                else:
-                    inv_pred_q_s = max_inv_q_a.detach() * w
-                    pred_q_s = max_q_a.detach() * w
-                loss_coordinator += torch.sum(torch.sum(torch.sum(
-                    nn.ReLU()(inv_pred_q_s - pred_q_s).unsqueeze(-1).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1), -1) / self.n_agents)
+                    loss_coordinator += torch.sum(torch.sum(torch.sum(
+                        nn.ReLU()(inv_pred_q_s - pred_q_s).unsqueeze(-1).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1), -1) / self.n_agents)
 
-
-            self.optimizer_coordinator.zero_grad()
-            loss_coordinator.backward()
-            self.optimizer_coordinator.step()
-            self.coord_loss += loss_coordinator
-            self.coord_stats.update({"no": (coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1]).sum().item(), "yes": (coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1]).sum().item(), "good": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0).sum().item(), "bad": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))>0).sum().item(), "agree": (inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum().item()})
+                if loss_coordinator > 0.05:  # avoid excessive updates, leading to vanishing gradients
+                    self.optimizer_coordinator.zero_grad()
+                    loss_coordinator.backward()
+                    self.optimizer_coordinator.step()
+                    self.coord_loss += loss_coordinator
+                    self.coord_stats.update({"no": (coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1]).sum().item(), "yes": (coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1]).sum().item(), "good": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0).sum().item(), "bad": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))>0).sum().item(), "agree": (inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum().item()})
 
             # optimize the ae while acting
             if self.q_policy.shared_comm_ae:
@@ -181,63 +197,76 @@ class CoordQMixGymAgent(BaseAgent):
                 self.optimizer_ae.step()
                 self.ae_loss += ae_loss
 
-        return actions.detach(), (hidden.detach(), coordinator_hidden.detach()), co_q_input
+        return actions.unsqueeze(-1).detach(), (hidden.detach(), coordinator_hidden.detach()), co_q_input
 
     def step(self, state, add_in, action, reward, next_state, done):
-        self.memory.put((state, action, np.array(reward).tolist(), next_state, np.array(done, dtype=int).tolist()), add_in)
+        self.memory.put(state, *([a.squeeze(0) for a in add_in] if add_in is not None else [None, None]), action, reward, next_state, done)
+
         # drain ea loss got from action in order for logging
-        losses = {"ae_loss": self.ae_loss.item()} if self.ae_loss != 0 else {}
-        losses.update({"coord_loss": self.coord_loss.item()})
+        losses = {"ae_loss": self.ae_loss.item(), "coord_loss": self.coord_loss.item()}
+        self.ae_loss, self.coord_loss = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         losses.update(self.coord_stats)
-        self.ae_loss = self.coord_loss = 0
+        num_updates = 0
 
-        if self.memory.size() > self.warm_up_steps:
-            q_loss_epoch = 0
+        if self.memory.size() >= self.warm_up_steps:
+            self.updates += self.K_epochs
+            if self.updates >= 1:
+                q_loss_epoch = 0
+                num_updates = int(self.updates)
+                for _ in range(num_updates):
+                    states, comm, coord_masks, actions, rewards, next_states, done_masks = self.memory.sample_chunk(self.batch_size, self.chunk_size)
 
-            _chunk_size = self.chunk_size
-            for _ in range(self.K_epochs):
-                states, comm, coord_masks, actions, rewards, next_states, done_masks = self.memory.sample_chunk(self.batch_size, _chunk_size+1)
+                    hidden, coord_hidden = self.q_policy.init_hidden(self.batch_size)
+                    target_hidden, target_coord_hidden = self.q_policy_target.init_hidden(self.batch_size)
 
-                hidden, coord_hidden = self.q_policy.init_hidden(self.batch_size)
-                target_hidden, target_coord_hidden = self.q_policy_target.init_hidden(self.batch_size)
-
-                loss_q = 0
-                for step_i in range(_chunk_size+1):
-                    with torch.no_grad() if step_i == 0 else nullcontext():
-                        # reset recurrent info if the chunk contains a restart (all dones)
-                        all_done = torch.all((1-done_masks[:, step_i]).bool(),-1)
-                        hidden[all_done], coord_hidden[:,:,all_done] = self.q_policy.init_hidden(len(hidden[all_done]))
-                        target_hidden[all_done], target_coord_hidden[:,:,all_done] = self.q_policy_target.init_hidden(len(target_hidden[all_done]))
-                        # done_masks[:, step_i][all_done] = 1
+                    loss_q = 0
+                    for step_i in range(self.chunk_size):
+                        # reset recurrent info /*if the chunk contains a restart (all dones)*/ if done
+                        reset = (1-done_masks[:, step_i]).squeeze(-1).bool()
+                        next_reset = (1-done_masks[:, step_i+1]).squeeze(-1).bool()
+                        m, cm, tm, tcm = *self.q_policy.init_hidden(len(reset)), *self.q_policy_target.init_hidden(len(next_reset))
+                        hidden[reset], coord_hidden.permute(2,0,1,3)[reset] = m[reset], cm.permute(2,0,1,3)[reset]
+                        target_hidden[reset], target_coord_hidden.permute(2,0,1,3)[reset] = tm[reset], tcm.permute(2,0,1,3)[reset]
+                        target_hidden[next_reset], target_coord_hidden.permute(2,0,1,3)[next_reset] = tm[next_reset], tcm.permute(2,0,1,3)[next_reset]
+                        done_masks[:, step_i][torch.all((1-done_masks[:, step_i]).squeeze(-1).bool(),-1)] = 1  # fresh start when needed
 
                         # q policy training with respect the target q policy network
                         q_a, hidden, coord_hidden = self.q_policy.eval_action(states[:, step_i], hidden, coord_hidden, done_masks[:, step_i], comm[:, step_i], coord_masks[:, step_i], actions[:, step_i])
-                        pred_q = self.mix_net(q_a, states[:, step_i], done_masks[:, step_i])
+                        q_a[~done_masks[:, step_i].squeeze(-1).bool()] = 0
+                        pred_q = self.mix_net(q_a, states[:, step_i])
 
                         q_target, target_hidden, target_coord_hidden, _, _, _, _ = self.q_policy_target(next_states[:, step_i], target_hidden.detach(), target_coord_hidden.detach(), done_masks[:, step_i+1])
-                        max_q_target = q_target.max(dim=2)[0].squeeze(-1)
-                        next_q_total = self.mix_net_target(max_q_target, next_states[:, step_i], done_masks[:, step_i+1]).detach()
-                        target = (rewards[:, step_i] * done_masks[:, step_i]).sum(dim=1, keepdims=True) + (self.gamma * next_q_total)
-                        loss_q += F.l1_loss(pred_q, target) if step_i > 0 else 0
+                        max_q_target = q_target.max(dim=2)[0].squeeze(-1)  # instead, mask the max with no op for done agents
+                        max_q_target[~done_masks[:, step_i+1].squeeze(-1).bool()] = 0  # mask q at 0 or mask with q of no_op actions?
+                        # max_indeces = q_target.max(dim=2)[1]
+                        # max_indeces[~done_masks[:, step_i+1].squeeze(-1).bool()] = self.no_op
+                        # max_q_target = q_target.gather(2, max_indeces.unsqueeze(-1).long()).squeeze(-1)
+                        next_q_total = self.mix_net_target(max_q_target, next_states[:, step_i]).detach()
+                        target = (rewards[:, step_i] * done_masks[:, step_i]).squeeze(-1).sum(dim=1, keepdims=True) + (self.gamma * next_q_total)
+                        loss_q += F.l1_loss(pred_q, target) * self.lambda_q
 
-                self.optimizer_policy.zero_grad()
-                loss_q.backward()
-                if self.grad_clip_norm != 0:
-                    torch.nn.utils.clip_grad_norm_(self.q_policy.get_policy_parameters(), self.grad_clip_norm, norm_type=2)
-                    torch.nn.utils.clip_grad_norm_(self.mix_net.parameters(), self.grad_clip_norm, norm_type=2)
-                self.optimizer_policy.step()
+                    self.optimizer_policy.zero_grad()
+                    loss_q.backward()
+                    if self.grad_clip_norm != 0:
+                        # torch.nn.utils.clip_grad_norm_(self.q_policy.get_policy_parameters(), self.grad_clip_norm, norm_type=2)
+                        torch.nn.utils.clip_grad_norm_(self.mix_net.parameters(), self.grad_clip_norm, norm_type=2)
+                    self.optimizer_policy.step()
 
-                q_loss_epoch += loss_q.item()
+                    self._soft_update()
 
-            num_updates = self.K_epochs
-            q_loss_epoch /= num_updates
-            losses.update({"q_loss": q_loss_epoch})
+                    q_loss_epoch += loss_q.item()
 
-        return losses
+                q_loss_epoch /= num_updates
+                self.updates -= num_updates
+                losses.update({"q_loss": q_loss_epoch})
+
+        return num_updates, losses
 
     def update_target_net(self):
-        self.q_policy_target.load_state_dict(self.q_policy.state_dict())
-        self.mix_net_target.load_state_dict(self.mix_net.state_dict())
+        # self.q_policy_target.load_state_dict(self.q_policy.state_dict())
+        # self.mix_net_target.load_state_dict(self.mix_net.state_dict())
+        # print('Target networks updated')
+        pass
 
     def update_learning_rate(self):
         """
