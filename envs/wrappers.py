@@ -10,17 +10,16 @@ class MaGymEnvWrap(object):
         self.n_agents = env.n_agents
         self.agents_ids = [str(k) for k in env.agent_pos.keys()]
         self.clock = pygame.time.Clock()
-        self.observation_space = {k:gym.spaces.box.Box(np.array([0.,0.,0.,0.,0.]),np.array([1.,1.,1.,1.,1.]),(5,)) for i, k in enumerate(self.agents_ids)}
-        self.action_space = {k: env.action_space[i] for i, k in enumerate(self.agents_ids)}
-        self.no_op = 0
+        self.observation_space = {k: self.env.observation_space[i] for i, k in enumerate(self.agents_ids)}
+        self.action_space = {k: self.env.action_space[i] for i, k in enumerate(self.agents_ids)}
+        self.no_op = 4
 
     def set_no_op(self, action):
         self.no_op = action
 
     def reset(self):
         obs = self.env.reset()
-        completeness = 0.0
-        obs_dict = {id: o[:-1]+[round(f[0] / (self.env._grid_shape[0] - 1), 2), round(f[1] / (self.env._grid_shape[1] - 1), 2)]+[completeness] for o, f, id in zip(obs, self.env.final_agent_pos.values(), self.agents_ids)}
+        obs_dict = {id: o for o, id in zip(obs, self.agents_ids)}
         rewards_dict = {id: 0 for id in self.agents_ids}
         dones_dict = {id: False for id in self.agents_ids}
         info_dict = {}
@@ -28,29 +27,18 @@ class MaGymEnvWrap(object):
 
     def step(self, actions):
         obs, rewards, dones, info = self.env.step(actions)
-        urgency_reward = round((self.env._max_steps-self.env._step_count)/self.env._max_steps*5, 2)
-        rewards = [r+urgency_reward if r>0 else r for r in rewards]
-        completeness = self.env._step_count/self.env._max_steps
-
-        obs_dict = {id: o[:-1]+[round(f[0] / (self.env._grid_shape[0] - 1), 2), round(f[1] / (self.env._grid_shape[1] - 1), 2)]+[completeness] for o, f, id in zip(obs, self.env.final_agent_pos.values(), self.agents_ids)}
+        rewards = [r for r in rewards]
+        obs_dict = {id: o for o, id in zip(obs, self.agents_ids)}
         rewards_dict = {id: r for r, id in zip(rewards, self.agents_ids)}
         dones_dict = {id: d for d, id in zip(dones, self.agents_ids)}
-        info.update({"success": np.all(dones) and self.env._step_count < self.env._max_steps})
+        info.update({"success": np.all(dones) and self.env.step_count < self.env.max_steps})
         return obs_dict, rewards_dict, dones_dict, info
 
     def close(self):
         self.env.close()
 
-    def get_near_matrix(self):
-        agents = self.unwrapped.env.agents
-        positions = [a.current_pos for a in agents]
-        size_obs = list(self.observation_space.values())[0].shape[0]
-        identity = np.expand_dims(np.identity(len(agents)), -1) * size_obs
-        near_mat = np.all((np.abs(np.expand_dims(positions, 0) - np.expand_dims(positions, 1)) + identity) <= math.floor(size_obs / 2), 2)
-        return near_mat
-
     def get_success_metric(self):
-        return self.env._max_steps-self.env._step_count
+        return self.env.max_steps-self.env.step_count
 
     def render(self, **kwargs):
         self.clock.tick(30)
@@ -65,7 +53,7 @@ class MaGymEnvWrap(object):
                     return
 
 
-class EnvWrap(BaseWrapper):
+class PZEnvWrap(BaseWrapper):
     def __init__(self, env):
         super().__init__(env)
         self.n_agents = env.unwrapped.num_agents
