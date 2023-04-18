@@ -14,13 +14,13 @@ from core.ma_gym.baselines.idqn import IDQNGym
 from core.ma_gym.comix.comaddpg_agent import CoordMADDPGGymAgent
 from core.ma_gym.baselines.qmix import QMixGym
 from envs.multiprocessing_env import SubprocVecEnv
-from envs.wrappers import EnvWrap, MaGymEnvWrap
+from envs.wrappers import PZEnvWrap, MaGymEnvWrap
 from utils.logger import Logger
 
 global _device
 
 
-def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable[[Namespace, EnvWrap], BaseAgent], logger: Logger):
+def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Callable[[Namespace, MaGymEnvWrap], BaseAgent], logger: Logger):
     # Initialize elements
     env = env_fn()
     test_env = env_fn()
@@ -48,7 +48,7 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             step += 1
             # select agent actions from observations
             actions, hxs, add_in = agents.take_action(current_state_obs, hxs, dones)
-            actions[dones.squeeze().bool()] = env.no_op
+            actions[dones.squeeze().bool()] = env.no_op  # TODO change it with None
 
             # env step
             next_state_obs, rewards_dict, dones, info = env.step(list(map(lambda a: None if dones[a[0]] else a[1][0].cpu().numpy(), enumerate(actions))))
@@ -62,12 +62,11 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
             next_state_obs = torch.Tensor(np.stack([next_state_obs[id] for id in agents_ids])).to(_device)
             dones = torch.Tensor(np.expand_dims(np.stack([dones[id] for id in agents_ids]), -1)).to(_device)
 
-            # let agent take step and add to memory; skip if ended by max_step
-            if not dones.all() or info["success"]:
-                n_updates, losses = agents.step(current_state_obs, add_in, actions, rewards, next_state_obs, dones)
-                if warmup_ended:
-                    n_log_steps = n_updates if opt.log_per_update else 1
-                    logger.train_step(n_log_steps, {**rewards_dict, **losses}, agents.schedulers[0].get_last_lr()[0])
+            # let agent store it and take a learning take step (if `warmup_ended`); skip if ended by max_step
+            n_updates, losses = agents.step(current_state_obs, add_in, actions, rewards, next_state_obs, dones)
+            if warmup_ended:
+                n_log_steps = n_updates if opt.log_per_update else 1
+                logger.train_step(n_log_steps, {**rewards_dict, **losses}, agents.schedulers[0].get_last_lr()[0])
             # update for next iteration
             current_state_obs = next_state_obs
 
@@ -121,7 +120,7 @@ def play_loop(opt: Namespace, env_fn: Callable[[], EnvWrap], agents_fn: Callable
         logger.log_artifact(path, name, f"checkpoint_{opt.episodes}")
 
 
-def gym_loop(args, device, logger):
+def gym_loop(args: Namespace, device: torch.device, logger: Logger):
     global _device
     _device = device
 
@@ -132,24 +131,27 @@ def gym_loop(args, device, logger):
             sys.path.append(egg_path)
             from pettingzoo.sisl import pursuit_v4
             s, np = (18, 8) if args.env == 'CoMix_pursuit8' else (20, 16) if args.env == 'CoMix_pursuit16' else (16, 4)
-            env = EnvWrap(pursuit_v4.env(max_cycles=500, x_size=s, y_size=s, shared_reward=False, n_evaders=16, n_pursuers=np,
+            env = PZEnvWrap(pursuit_v4.env(max_cycles=500, x_size=s, y_size=s, shared_reward=False, n_evaders=16, n_pursuers=np,
                            obs_range=7, n_catch=2, freeze_evaders=False, tag_reward=0.01, catch_reward=5.0,
                            urgency_reward=0.0, surround=True, constraint_window=1.0, render_mode=args.render_mode, rand_init=False))
             env.set_no_op(4)
         elif args.env == "switch_dev" or args.env == "CoMix_switch":
-            gym.envs.register(id='MySwitch4-v0', entry_point='ma_gym.envs.switch:Switch', kwargs={'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 250})
-            env = MaGymEnvWrap(gym.make("ma_gym:MySwitch4-v0"))
-            env.set_no_op(4)
+            gym.envs.register(id='CustomSwitch4-v0', entry_point='envs.switch:Switch', kwargs={'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 500})
+            env = MaGymEnvWrap(gym.make("CustomSwitch4-v0"))
             # set best hp used for evaluation... (using a yaml would be more appropriate)
-            args.coord_mask_type, args.decay_epsilon, args.cnn_input_proc, args.min_buffer_len, args.max_buffer_len, \
-                args.tau, args.batch_size, args.ep, args.hc, args.hi, args.hm, args.hs, args.chunk_size, args.K_epochs \
-                = "optout", 0.75, 0, 100000, 20000, \
-                0.005, 256, 600, 64, 32, 32, 1, 256, 0.25
+            # args.coord_mask_type, args.decay_epsilon, args.cnn_input_proc, args.min_buffer_len, args.max_buffer_len, \
+            #     args.tau, args.batch_size, args.ep, args.hc, args.hi, args.hm, args.hs, args.chunk_size, args.K_epochs \
+            #     = "optout", 0.75, 0, 500, 20000, \
+            #     0.005, 256, 600, 64, 32, 32, 1, 256, 0.25
+        elif args.env == "predator_prey_dev" or args.env == "CoMix_predator_prey":
+            gym.envs.register(id='CustomPredatorPrey5x5-v0', entry_point='envs.predator_prey:PredatorPrey', kwargs=
+            {'grid_shape': (10, 8), 'n_agents':4, 'n_preys': 1, 'prey_move_probs':(0.2, 0.2, 0.2, 0.2, 0.2), 'full_observable':False, 'penalty': 0, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (7, 7)})
+            env = MaGymEnvWrap(gym.make("CustomPredatorPrey5x5-v0"))
         else:
             env = gym.make(args.env)
         return env
 
-    def create_agent_fn(opt, env):
+    def create_agent_fn(opt: Namespace, env):
         # Choose the agent implementation
         if args.agent == 'idqn':
             agent = IDQNGym(opt, env, _device)
@@ -167,8 +169,5 @@ def gym_loop(args, device, logger):
 
         return agent
 
-    # parallel environment not implemented: generalize with named tuples to step the agent and fill the replay_memory
-    proc_env_fn = create_env_fn if args.parallel_envs <= 1 else SubprocVecEnv([create_env_fn for _ in range(args.parallel_envs)])
-
     # run loop
-    play_loop(args, proc_env_fn, create_agent_fn, logger)
+    play_loop(args, create_env_fn, create_agent_fn, logger)

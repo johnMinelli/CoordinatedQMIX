@@ -138,19 +138,6 @@ class QNet(nn.Module):
             q_values[i] = self.q[i](x).unsqueeze(1)
         return torch.cat(q_values, dim=1), torch.cat(next_hidden, dim=1)
 
-    def sample_action_from_qs(self, out, epsilon):
-        mask = torch.rand((out.shape[:2])) <= epsilon
-        action = torch.empty((out.shape[0], out.shape[1]), dtype=self.action_dtype).to(self._device)
-        action[mask] = torch.randint(0, out.shape[2], action[mask].shape).type_as(action)
-        action[~mask] = out[~mask].argmax(dim=1).type_as(action)
-
-        return action
-
-    def sample_action(self, obs, hidden, epsilon):
-        out, hidden = map(lambda o: o.detach().cpu(), self.forward(obs, hidden))
-        action = self.sample_action_from_qs(out, epsilon)
-        return action, hidden
-
     def init_hidden(self, batch_size):
         return torch.zeros((batch_size, self.num_agents, self.hx_size)).to(self._device)
 
@@ -171,8 +158,9 @@ class RecurrentHead(nn.Module):
     def forward(self, x, rnn_hxs, batch_mask):
         # move `padding` (i.e. agents zeroed) at right place then cutted when packing
         compact_seq = torch.zeros_like(x)
-        for i, seq_len in enumerate(batch_mask.sum(0)):  # cycle over the batch and sum over agents
-            compact_seq[:seq_len, i] = x[batch_mask[:,i],i]
+        seq_lengths = batch_mask.sum(0)
+        packed_mask = torch.arange(x.size(0)).reshape(-1, 1).to(x.device) < seq_lengths.reshape(1, -1)
+        compact_seq[packed_mask, :] = x[batch_mask, :]
         # pack in sequence dimension (the number of agents)
         packed_x = pack_padded_sequence(compact_seq, batch_mask.sum(0).cpu().numpy(), enforce_sorted=False)
         packed_scores, rnn_hxs = self.gru(packed_x, rnn_hxs)
@@ -222,21 +210,17 @@ class Coordinator(nn.Module):
         # The coordination part is detached from the rest: it produces only the boolean coord_masks
         glob_rnn_hxs = []
         coord_masks = []
-        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch for t=0 case
+        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch in case of a batch sample with no comm (e.g. for t=0 case) # NOTE serve solo da mettere dati a caso per non dover filtrare il batch.  
         glob_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
         for i in range(self.num_agents):
             # if not torch.any(plans[:,i]): continue  # agent done
-            # others_plans = torch.cat((comm_plans[:, :i], plans[:,i].unsqueeze(1), comm_plans[:, i+1:]), dim=1).detach()  # TODO should I inject the prev decision of communicate? should I make the coordinator conscious of who is coordinating for?
             others_plans = torch.cat([plans[:,i].unsqueeze(1).expand(comm_plans.shape), comm_plans],-1)
             x = others_plans.transpose(0, 1)  # (n,b,h)
             scores, rnn_hxs = self.global_coord_net[i](x, glob_hiddens[i], glob_batch_mask)
-            scores = scores.transpose(0, 1)
-            glob_rnn_hxs.append(rnn_hxs.unsqueeze(0))  # TODO io uso la GRUCell con sequenze di n_agents, ma l'hidden riesce a capire la ricorrenza delle decisioni a gruppi di n_agents? intrarelazioni in sequenza ed interrelazioni con la decisione finale (se la decisione finale parla dell'agente alla posizione x della sequenza che alla volta dopo sarà sempre alla posizione x)?
+            agent_coord_masks = self.boolean_coordinator[i](scores)
 
-            coord_mask = []
-            for j in range(scores.size(1)):  # to optimize by reshape
-                coord_mask.append(self.boolean_coordinator[i](scores[:,j]).unsqueeze(0))
-            coord_masks.append(torch.cat(coord_mask, dim=0).unsqueeze(0))
+            glob_rnn_hxs.append(rnn_hxs.unsqueeze(0))
+            coord_masks.append(agent_coord_masks.unsqueeze(0))
         glob_rnn_hxs = torch.cat(glob_rnn_hxs, dim=0)
         coord_masks = torch.cat(coord_masks, dim=0)
 
