@@ -1,5 +1,7 @@
 ﻿import copy
 import logging
+import random
+from netrc import netrc
 
 import gym
 import math
@@ -40,7 +42,7 @@ class PredatorPrey(gym.Env):
 
     def __init__(self, grid_shape=(5, 5), n_agents=2, n_preys=1, prey_move_probs=(0.175, 0.175, 0.175, 0.175, 0.3),
                  full_observable=False, penalty=-0.5, step_cost=-0.01, prey_capture_reward=5, prey_tag_reward=0.1,
-                 max_steps=100, agent_view_range=(5, 5)):
+                 wall_percentage=5, max_steps=100, agent_view_range=(5, 5)):
         assert len(grid_shape) == 2, 'expected a tuple of size 2 for grid_shape, but found {}'.format(grid_shape)
         assert len(agent_view_range) == 2, 'expected a tuple of size 2 for agent view mask,' \
                                           ' but found {}'.format(agent_view_range)
@@ -49,6 +51,7 @@ class PredatorPrey(gym.Env):
         assert 0 < agent_view_range[1] <= grid_shape[1], 'agent view mask has to be within (0,{}]'.format(grid_shape[1])
 
         self._grid_shape = grid_shape
+        self.wall_percentage = wall_percentage
         self.n_agents = n_agents
         self.n_preys = n_preys
         self._max_steps = max_steps
@@ -65,7 +68,6 @@ class PredatorPrey(gym.Env):
         self.prey_pos = {_: None for _ in range(self.n_preys)}
         self._prey_alive = None
 
-        self._base_grid = self.__create_grid()  # with no agents
         self._full_obs = self.__create_grid()
         self._agent_dones = [False for _ in range(self.n_agents)]
         self._prey_move_probs = prey_move_probs
@@ -93,6 +95,10 @@ class PredatorPrey(gym.Env):
     def max_steps(self):
         return self._max_steps
 
+    @property
+    def success(self):
+        return self.n_preys-sum(self._prey_alive)
+
     def get_action_meanings(self, agent_i=None):
         if agent_i is not None:
             assert agent_i <= self.n_agents
@@ -105,9 +111,19 @@ class PredatorPrey(gym.Env):
 
     def __draw_base_img(self):
         self._base_img = draw_grid(self._grid_shape[0], self._grid_shape[1], cell_size=CELL_SIZE, fill='white')
+        for col in range(self._grid_shape[0]):
+            for row in range(self._grid_shape[1]):
+                if self._wall_exists((col, row)):
+                    fill_cell(self._base_img, (col, row), cell_size=CELL_SIZE, fill=WALL_COLOR)
 
     def __create_grid(self):
-        _grid = np.zeros((2, *self._grid_shape))
+        _grid = np.zeros((3, *self._grid_shape))
+        # add walls in ransom positions
+        random_walls = int(round(self._grid_shape[0] * self._grid_shape[1] * self.wall_percentage / 100))
+        for i in range(random_walls):
+            col = random.randint(0, self._grid_shape[0]-1)
+            row = random.randint(0, self._grid_shape[1]-1)
+            _grid[WALL][col][row] = 1
         return _grid
 
     def __init_full_obs(self):
@@ -117,7 +133,7 @@ class PredatorPrey(gym.Env):
             while True:
                 pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
                        self.np_random.randint(0, self._grid_shape[1] - 1)]
-                if self._is_cell_preyless(pos):
+                if self._is_cell_preyless(pos) and not self._wall_exists(pos):
                     self.agent_pos[agent_i] = pos
                     break
             self.__update_agent_view(agent_i)
@@ -126,7 +142,7 @@ class PredatorPrey(gym.Env):
             while True:
                 pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
                        self.np_random.randint(0, self._grid_shape[1] - 1)]
-                if self._is_cell_agentless(pos):
+                if self._is_cell_agentless(pos) and not self._wall_exists(pos):
                     self.prey_pos[prey_i] = pos
                     break
             self.__update_prey_view(prey_i)
@@ -147,7 +163,9 @@ class PredatorPrey(gym.Env):
 
             for i, col in enumerate(range(pos[0] - x_m, pos[0] + x_m + 1)):
                 for j, row in enumerate(range(pos[1] - y_m, pos[1] + y_m + 1)):
-                    if not self.is_valid((col, row)): continue
+                    if not self.is_valid((col, row)):
+                        _prey_pos[i, j] = _agent_pos[i, j] = -1
+                        continue
                     if self._full_obs[PREY][col][row] > 0:
                         _prey_pos[i, j] = self._full_obs[PREY][col][row]  # get relative position for the prey loc.
                     if self._full_obs[AGENT][col][row] > (1 if pos == [col, row] else 0):
@@ -176,9 +194,8 @@ class PredatorPrey(gym.Env):
 
         return self.get_agent_obs()
 
-    def __wall_exists(self, pos):
-        col, row = pos
-        return PRE_IDS['wall'] in self._base_grid[col, row]
+    def _wall_exists(self, pos):
+        return self._full_obs[WALL][pos[0]][pos[1]] == 1
 
     def is_valid(self, pos):
         return (0 <= pos[0] < self._grid_shape[0]) and (0 <= pos[1] < self._grid_shape[1])
@@ -188,28 +205,6 @@ class PredatorPrey(gym.Env):
 
     def _is_cell_agentless(self, pos):
         return self.is_valid(pos) and (self._full_obs[AGENT][pos[0]][pos[1]] == 0)
-
-    def __update_agent_pos(self, agent_i, move):
-
-        curr_pos = copy.copy(self.agent_pos[agent_i])
-        next_pos = None
-        if move == 0:  # down
-            next_pos = [curr_pos[0] + 1, curr_pos[1]]
-        elif move == 1:  # left
-            next_pos = [curr_pos[0], curr_pos[1] - 1]
-        elif move == 2:  # up
-            next_pos = [curr_pos[0] - 1, curr_pos[1]]
-        elif move == 3:  # right
-            next_pos = [curr_pos[0], curr_pos[1] + 1]
-        elif move == 4:  # no-op
-            pass
-        else:
-            raise Exception('Action Not found!')
-
-        if next_pos is not None and self.is_valid(next_pos):
-            self.agent_pos[agent_i] = next_pos
-            self._full_obs[AGENT][curr_pos[0]][curr_pos[1]] -= 1
-            self.__update_agent_view(agent_i)
 
     def __next_pos(self, curr_pos, move):
         if move == 0:  # down
@@ -222,32 +217,29 @@ class PredatorPrey(gym.Env):
             next_pos = [curr_pos[0], curr_pos[1] + 1]
         elif move == 4:  # no-op
             next_pos = curr_pos
+        else:
+            raise Exception('Action Not found!')
         return next_pos
+
+    def __update_agent_pos(self, agent_i, move):
+
+        curr_pos = copy.copy(self.agent_pos[agent_i])
+        next_pos = self.__next_pos(curr_pos, move)
+
+        if next_pos != curr_pos and self.is_valid(next_pos) and not self._wall_exists(next_pos):
+            self.agent_pos[agent_i] = next_pos
+            self._full_obs[AGENT][curr_pos[0]][curr_pos[1]] -= 1
+            self.__update_agent_view(agent_i)
 
     def __update_prey_pos(self, prey_i, move):
         curr_pos = copy.copy(self.prey_pos[prey_i])
         if self._prey_alive[prey_i]:
-            next_pos = None
-            if move == 0:  # down
-                next_pos = [curr_pos[0] + 1, curr_pos[1]]
-            elif move == 1:  # left
-                next_pos = [curr_pos[0], curr_pos[1] - 1]
-            elif move == 2:  # up
-                next_pos = [curr_pos[0] - 1, curr_pos[1]]
-            elif move == 3:  # right
-                next_pos = [curr_pos[0], curr_pos[1] + 1]
-            elif move == 4:  # no-op
-                pass
-            else:
-                raise Exception('Action Not found!')
+            next_pos = self.__next_pos(curr_pos, move)
 
-            if next_pos is not None and self.is_valid(next_pos):
+            if next_pos != curr_pos and self.is_valid(next_pos) and not self._wall_exists(next_pos):
                 self.prey_pos[prey_i] = next_pos
                 self._full_obs[PREY][curr_pos[0]][curr_pos[1]] -= 1
                 self.__update_prey_view(prey_i)
-            else:
-                # print('pos not updated')
-                pass
         else:
             self._full_obs[PREY][curr_pos[0]][curr_pos[1]] -= 1
 
@@ -298,7 +290,9 @@ class PredatorPrey(gym.Env):
 
         for prey_i in range(self.n_preys):
             if self._prey_alive[prey_i]:
-                surrounding_cells = [[disp_x + self.prey_pos[prey_i][0], disp_y + self.prey_pos[prey_i][1]] for disp_x, disp_y in [[0,-1],[0,1],[-1,0],[1,0]] if self.is_valid((disp_x + self.prey_pos[prey_i][0], disp_y + self.prey_pos[prey_i][1]))]
+                surrounding_cells = [[disp_x + self.prey_pos[prey_i][0], disp_y + self.prey_pos[prey_i][1]] for disp_x, disp_y in [[0,-1],[0,1],[-1,0],[1,0]]
+                                     if self.is_valid((disp_x + self.prey_pos[prey_i][0], disp_y + self.prey_pos[prey_i][1]))
+                                     and not self._wall_exists((disp_x + self.prey_pos[prey_i][0], disp_y + self.prey_pos[prey_i][1]))]
                 surrounding_predators = [(i, pos) for i, pos in self.agent_pos.items() if pos in surrounding_cells]
                 tagging_predators = [i for i, pos in self.agent_pos.items() if pos == self.prey_pos[prey_i]]
 
@@ -358,7 +352,8 @@ class PredatorPrey(gym.Env):
         img = copy.copy(self._base_img)
         for agent_i in range(self.n_agents):
             for neighbour in self.__get_neighbour_coordinates(self.agent_pos[agent_i]):
-                fill_cell(img, neighbour, cell_size=CELL_SIZE, fill=AGENT_NEIGHBORHOOD_COLOR, margin=0.1)
+                if self._full_obs[WALL][neighbour[0]][neighbour[1]] == 0:
+                    fill_cell(img, neighbour, cell_size=CELL_SIZE, fill=AGENT_NEIGHBORHOOD_COLOR, margin=0.1)
             fill_cell(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=AGENT_NEIGHBORHOOD_COLOR, margin=0.1)
 
         for agent_i in range(self.n_agents):
@@ -400,14 +395,15 @@ CELL_SIZE = 35
 
 WALL_COLOR = 'black'
 
+WALL = -1
 PREY = 0
 AGENT = 1
 
 ACTION_MEANING = {
-    0: "DOWN",
-    1: "LEFT",
-    2: "UP",
-    3: "RIGHT",
+    0: "RIGHT",
+    1: "UP",
+    2: "LEFT",
+    3: "DOWN",
     4: "NOOP",
 }
 

@@ -72,6 +72,10 @@ class Switch(gym.Env):
     def max_steps(self):
         return self._max_steps
 
+    @property
+    def success(self):
+        return self._max_steps-self._step_count
+
     def get_action_meanings(self, agent_i=None):
         if agent_i is not None:
             assert agent_i <= self.n_agents
@@ -139,13 +143,13 @@ class Switch(gym.Env):
     def __update_agent_pos(self, agent_i, move):
         curr_pos = copy.copy(self.agent_pos[agent_i])
         next_pos = None
-        if move == 0:  # down
+        if move == 0:  # right
             next_pos = [curr_pos[0] + 1, curr_pos[1]]
-        elif move == 1:  # left
+        elif move == 1:  # up
             next_pos = [curr_pos[0], curr_pos[1] - 1]
-        elif move == 2:  # up
+        elif move == 2:  # left
             next_pos = [curr_pos[0] - 1, curr_pos[1]]
-        elif move == 3:  # right
+        elif move == 3:  # down
             next_pos = [curr_pos[0], curr_pos[1] + 1]
         elif move == 4:  # no-op
             pass
@@ -160,7 +164,7 @@ class Switch(gym.Env):
             pass
 
     def __update_agent_view(self, agent_i):
-        self._full_obs[self.agent_pos[agent_i][0], self.agent_pos[agent_i][1]] = agent_i + 1
+        self._full_obs[self.agent_pos[agent_i][0], self.agent_pos[agent_i][1]] = 1
 
     def __is_agent_done(self, agent_i):
         return self.agent_pos[agent_i] == self.final_agent_pos[agent_i]
@@ -233,9 +237,9 @@ CELL_SIZE = 30
 WALL_COLOR = 'black'
 
 ACTION_MEANING = {
-    0: "DOWN",
-    1: "LEFT",
-    2: "UP",
-    3: "RIGHT",
+    0: "RIGHT",
+    1: "UP",
+    2: "LEFT",
+    3: "DOWN",
     4: "NOOP",
 }
