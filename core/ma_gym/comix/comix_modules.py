@@ -106,13 +106,12 @@ class EncoderDecoder(nn.Module):
 
 
 class QNet(nn.Module):
-    def __init__(self, agents_ids, action_space, hidden_size, action_dtype):
+    def __init__(self, agents_ids, action_space, hidden_size):
         super(QNet, self).__init__()
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
         self.action_space = action_space
         self.hx_size = hidden_size
-        self.action_dtype = action_dtype
         _to_ma = lambda m, args: nn.ModuleList([m(*args) for _ in range(self.num_agents)])
 
         self.gru = _to_ma(nn.GRUCell, (self.hx_size, self.hx_size))
@@ -146,7 +145,7 @@ class RecurrentHead(nn.Module):
     def __init__(self, hidden_size, recurrent_input_size, bidirectional=False, batch_first=False):
         super(RecurrentHead, self).__init__()
 
-        self.gru = nn.GRU(hidden_size, recurrent_input_size, bidirectional=bidirectional, batch_first=batch_first)  # input features, recurrent steps
+        self.gru = nn.GRU(hidden_size, recurrent_input_size, bidirectional=bidirectional, batch_first=batch_first)
         for name, param in self.gru.named_parameters():
             if 'bias' in name:
                 nn.init.constant_(param, 0)
@@ -173,7 +172,7 @@ class RecurrentHead(nn.Module):
 class Coordinator(nn.Module):
     """Depending on the result of the BiGru module the action returned by the policy
      will be used or resampled with aid of communication messages"""
-    def __init__(self, agents_ids, action_space, plan_size, solo_recurrent_size, coord_recurrent_size):
+    def __init__(self, agents_ids, action_space, plan_size, coord_recurrent_size):
         super(Coordinator, self).__init__()
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
@@ -184,11 +183,13 @@ class Coordinator(nn.Module):
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
         _init_fc_ortho = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
 
-        self.global_coord_net = _to_ma(RecurrentHead, (self.plan_size*2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # [self, others]
-        self.boolean_coordinator = nn.ModuleList([nn.Sequential(
-            _init_fc_ortho(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 because takes the bidirectional hxs of global_coord_net
-            nn.ReLU(),
-            _init_fc_ortho(nn.Linear(coord_recurrent_size, 2))) for id in agents_ids])
+        self.global_coord_net = _to_ma(RecurrentHead, (self.plan_size*2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # it takes as input seq [[self, other],...]
+        self.boolean_coordinator = nn.ModuleList([
+            nn.Sequential(
+                _init_fc_ortho(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 since it takes the bidirectional hxs of global_coord_net
+                nn.ReLU(),
+                _init_fc_ortho(nn.Linear(coord_recurrent_size, 2))
+            ) for id in agents_ids])
 
     def to(self, device):
         self._device = device

@@ -7,9 +7,8 @@ class QMixer(nn.Module):
         if model_params is None:
             model_params = {}
         self.num_agents = len(observation_space)
-        self.state_size = sum(np.prod(_.shape) for _ in observation_space.values())
         self.hidden_size = model_params.get("hidden_size", 32)
-
+        self.state_size = self.hidden_size*4
 
         self.hyper_w_1 = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2 * self.num_agents),
                                        nn.ReLU(),
@@ -25,8 +24,6 @@ class QMixer(nn.Module):
 
     def forward(self, agent_qs, states):
         bs = agent_qs.size(0)
-        states = states.reshape(bs, self.num_agents, -1)
-
         states = states.reshape(bs, self.state_size)
         agent_qs = agent_qs.view(bs, 1, self.num_agents)
         # First layer
@@ -72,7 +69,6 @@ class QPolicy(nn.Module):
         self.obs_shape = list(observation_space.values())[0].shape
         self.obs_size = np.prod(self.obs_shape)
         self.action_space = action_space
-        self.action_dtype = torch.int if list(action_space.values())[0].__class__.__name__ == 'Discrete' else torch.float32
         self.action_size = list(self.action_space.values())[0].n  # this breaks action diversity for agents
         self.hidden_size = self.solo_recurrent_size = model_params.get("hidden_size", 64)
         self.coord_recurrent_size = model_params.get("coord_recurrent_size", 256)
@@ -102,15 +98,21 @@ class QPolicy(nn.Module):
         self.plan_size = self.num_agents+self.comm_size  # agent one_hot identifier + hidden + action one_hot
 
         # Q network to take decisions independently of others
-        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size, self.action_dtype)
-        # Produce the coordination maks 
-        self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size, solo_recurrent_size=self.solo_recurrent_size)
-        # Coordinated Q network to `slightly` adjust your decisions: the role of these modules is equivalent to a QNet but they were created this way for granularity of use
+        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size)
+        # Produce the coordination mask
+        self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size)
+        # Coordinated Q network to `slightly` adjust your decisions
         self.co_q_net = _to_ma(nn.GRUCell, (self.plan_size, self.solo_recurrent_size), {})
         self.intent_extractor = nn.Sequential(_init_fc_norm(nn.Linear(self.plan_size, self.solo_recurrent_size)),
                                               nn.ReLU(),
                                               _init_fc_norm(nn.Linear(self.solo_recurrent_size, self.solo_recurrent_size)))
-        self.co_q_linear = nn.ModuleList([_init_fc_norm(nn.Linear(self.solo_recurrent_size*2, action_space[id].n)) for id in agents_ids])
+        self.co_q_linear = nn.ModuleList([
+            nn.Sequential(_init_fc_norm(nn.Linear(self.solo_recurrent_size*2, self.solo_recurrent_size)),
+                          nn.ReLU(),
+                          _init_fc_norm(nn.Linear(self.solo_recurrent_size, action_space[id].n))
+            ) for id in agents_ids])
+
+        # w init
         for name, param in self.co_q_net.named_parameters():
             if 'bias' in name:
                 nn.init.constant_(param, 0)
@@ -196,7 +198,7 @@ class QPolicy(nn.Module):
 
         return q_values
 
-    def _modify_qs2(self, action_logits, hiddens, comm_plans, masks):
+    def _modify_qs2(self, action_logits, hiddens, comm_plans, masks, temporal_delays=None):
         # Compute q modifications on the base of the coordination induced by the coordination boolean mask
         # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
         b,n,h = comm_plans.shape
@@ -205,7 +207,8 @@ class QPolicy(nn.Module):
         masks = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(b, 1, 1).unsqueeze(-1)
         comm = (comm * masks).reshape(b * n * n, -1)
         intents[comm.any(-1)] = self.intent_extractor(comm[comm.any(-1)])
-        intents = intents.reshape(b, n, n, -1).sum(-2)
+        intents = intents.reshape(b, n, n, -1) / (temporal_delays if temporal_delays is not None else 1)
+        intents = intents.sum(-2)
 
         q_values = []
         for i, id in enumerate(self.agents_ids):
@@ -213,12 +216,12 @@ class QPolicy(nn.Module):
             if torch.any(intents[:, i]):
                 rnn_hxs = hiddens[:, i].clone()
                 action_logits_coord += self.co_q_linear[i](torch.cat([rnn_hxs, intents[:, i]], -1))
-            q_values.append(action_logits_coord.unsqueeze(1))  # NOTE xke questo funzioni il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
+            q_values.append(action_logits_coord.unsqueeze(1))
         q_values = torch.cat(q_values, dim=1)
 
         return q_values
 
-    def forward(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, eval_coord=False):
+    def forward(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, eval_coord=False, tdt=False):
         assert not eval_coord or eval_coord and (comm_plans is None and coord_masks is None), "The arguments combination passed do not match a std wanted behaviour."
         assert not (comm_plans is None and coord_masks is None) or (comm_plans is None and coord_masks is None), "The arguments combination passed is not valid."
         ae_loss = 0
@@ -235,7 +238,7 @@ class QPolicy(nn.Module):
 
         # --- (1) Solo action ---
         solo_qs, rnn_hxs = self.ma_q(x, rnn_hxs)
-        solo_actions = self.sample_action_from_qs(solo_qs)
+        solo_actions = torch.argmax(solo_qs, dim=-1)
         solo_actions_one_hot = torch.zeros_like(solo_qs).scatter_(-1, solo_actions.type(torch.int64).unsqueeze(-1), 1.)
 
         # --- (2) Communication ---
@@ -266,6 +269,7 @@ class QPolicy(nn.Module):
             blind_coord_masks = coord_masks.permute(1,2,0,3)
 
         # use coordination mask to 'communicate' (selectively allow communication) and improve your choices
+        # temporal_delays = torch.random().to(self._device) if tdt else None
         qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, blind_coord_masks)
         if eval_coord:
             with torch.no_grad():
