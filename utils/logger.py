@@ -88,9 +88,8 @@ class Logger(object):
 
         total_reward = env_stats["rewards"]
         tot_actors_reward = {"Tot_reward_"+k: r for k,r in total_reward.items()}
-        avg_actors_reward = {"Avg_reward_"+k: r / self.steps for k,r in total_reward.items()}
-        tot_reward = np.mean(np.array(list(tot_actors_reward.values())))
-        avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
+        tot_reward = np.sum(np.array(list(tot_actors_reward.values())))
+        avg_reward = np.mean(np.array(list(tot_actors_reward.values())))
         avg_reward_over_time = avg_reward / episode_time
 
         tot_env_stats = {k: sum([vi for vi in list(v.values())]) for k, v in env_stats.items() if k != "rewards"}
@@ -101,7 +100,7 @@ class Logger(object):
                  ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
                  (' - Avg Metrics : [' + ', '.join([str(l) for l in avg_metrics]) + ']' if len(avg_metrics)>0 else '') +
                  ' - Avg Time : {:.3f}'.format(avg_time))
-        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, **avg_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats, **num_stats})
+        self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats, **num_stats})
 
         if self.progress_bar is not None:
             self.progress_bar.update(self.episode + 1)
@@ -117,14 +116,13 @@ class Logger(object):
 
         total_reward = env_stats["rewards"]
         tot_actors_reward = {"Tot_reward_"+k: r for k,r in total_reward.items()}
-        avg_actors_reward = {"Avg_reward_"+k: r / self.steps for k,r in total_reward.items()}
-        avg_reward = np.mean(np.array(list(avg_actors_reward.values())))
-        tot_reward = np.mean(np.array(list(tot_actors_reward.values())))
+        tot_reward = np.sum(np.array(list(tot_actors_reward.values())))
+        avg_reward = np.mean(np.array(list(tot_actors_reward.values())))
         avg_reward_over_time = avg_reward / episode_time
 
         self.log('Val Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
                  ' * Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time))
-        self._log_stats_to_dashboards(self.total_steps, "Valid", {**avg_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, **num_stats})
+        self._log_stats_to_dashboards(self.total_steps, "Valid", {**tot_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, **num_stats})
 
         # restore values
         self.episode, self.steps, self.total_metrics, self.episode_start_time = self.holding_episode_info

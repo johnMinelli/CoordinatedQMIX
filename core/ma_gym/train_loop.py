@@ -14,7 +14,7 @@ from core.ma_gym.baselines.idqn import IDQNGym
 from core.ma_gym.comix.comaddpg_agent import CoordMADDPGGymAgent
 from core.ma_gym.baselines.qmix import QMixGym
 from envs.multiprocessing_env import SubprocVecEnv
-from envs.wrappers import PZEnvWrap, MaGymEnvWrap
+from envs.wrappers import MaGymEnvWrap
 from utils.logger import Logger
 
 global _device
@@ -126,27 +126,14 @@ def gym_loop(args: Namespace, device: torch.device, logger: Logger):
 
     def create_env_fn():
         # Create the game environment; the env name is filtered by parser
-        if args.env == "pursuit_dev" or "CoMix_pursuit" in args.env:
-            egg_path = './../../external/PettingZoo/dist/PettingZoo-1.22.3-py3.9.egg'
-            sys.path.append(egg_path)
-            from pettingzoo.sisl import pursuit_v4
-            s, np = (18, 8) if args.env == 'CoMix_pursuit8' else (20, 16) if args.env == 'CoMix_pursuit16' else (16, 4)
-            env = PZEnvWrap(pursuit_v4.env(max_cycles=500, x_size=s, y_size=s, shared_reward=False, n_evaders=16, n_pursuers=np,
-                           obs_range=7, n_catch=2, freeze_evaders=False, tag_reward=0.01, catch_reward=5.0,
-                           urgency_reward=0.0, surround=True, constraint_window=1.0, render_mode=args.render_mode, rand_init=False))
-            env.set_no_op(4)
-        elif args.env == "switch_dev" or args.env == "CoMix_switch":
-            gym.envs.register(id='CustomSwitch4-v0', entry_point='envs.switch:Switch', kwargs={'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 500})
+        if args.env == "switch_dev" or args.env == "CoMix_switch":
+            gym.envs.register(id='CustomSwitch4-v0', entry_point='envs.switch:Switch', kwargs=
+            {'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 500})
             env = MaGymEnvWrap(gym.make("CustomSwitch4-v0"))
-            # set best hp used for evaluation... (using a yaml would be more appropriate)
-            # args.coord_mask_type, args.decay_epsilon, args.cnn_input_proc, args.min_buffer_len, args.max_buffer_len, \
-            #     args.tau, args.batch_size, args.ep, args.hc, args.hi, args.hm, args.hs, args.chunk_size, args.K_epochs \
-            #     = "optout", 0.75, 0, 500, 20000, \
-            #     0.005, 256, 600, 64, 32, 32, 1, 256, 0.25
         elif args.env == "predator_prey_dev" or args.env == "CoMix_predator_prey":
-            gym.envs.register(id='CustomPredatorPrey5x5-v0', entry_point='envs.predator_prey:PredatorPrey', kwargs=
-            {'grid_shape': (10, 8), 'n_agents':4, 'n_preys': 1, 'prey_move_probs':(0.2, 0.2, 0.2, 0.2, 0.2), 'full_observable':False, 'penalty': 0, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (7, 7)})
-            env = MaGymEnvWrap(gym.make("CustomPredatorPrey5x5-v0"))
+            gym.envs.register(id='CustomPredatorPrey-v0', entry_point='envs.predator_prey:PredatorPrey', kwargs=
+            {'grid_shape': (12, 12), 'n_agents': 4, 'n_preys': 16, 'prey_move_probs': (0.2, 0.2, 0.2, 0.2, 0.2), 'full_observable': False, 'penalty': 0, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (7, 7)})
+            env = MaGymEnvWrap(gym.make("CustomPredatorPrey-v0"))
         else:
             env = gym.make(args.env)
         return env
