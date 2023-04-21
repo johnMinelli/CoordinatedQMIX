@@ -165,7 +165,7 @@ class CoordQMixGymAgent(BaseAgent):
                 dones_mask = dones_mask.squeeze(-1)
                 max_q_a = q_out.max(dim=-1)[0] * dones_mask
                 coord_masks = coord_masks.transpose(2, 0)  # F.softmax(coord_masks.transpose(2, 0), dim=-1)
-                w = self.mix_net_target.eval_states(self.q_policy_target.input_processor(observation).detach()).detach()
+                w = self.mix_net_target.eval_states((self.q_policy_target.input_processor(observation).detach()*dones_mask.unsqueeze(-1))+(-1*(~dones_mask.unsqueeze(-1).bool()))).detach()
                 if self.q_policy.eval_coord_mask == "optout":
                     max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask.unsqueeze(-1) * dones_mask.unsqueeze(-2)
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w.unsqueeze(2), -1)

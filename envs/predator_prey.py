@@ -163,7 +163,7 @@ class PredatorPrey(gym.Env):
 
             for i, col in enumerate(range(pos[0] - x_m, pos[0] + x_m + 1)):
                 for j, row in enumerate(range(pos[1] - y_m, pos[1] + y_m + 1)):
-                    if not self.is_valid((col, row)):
+                    if not self.is_valid((col, row)) or self._wall_exists((col, row)):
                         _prey_pos[i, j] = _agent_pos[i, j] = -1
                         continue
                     if self._full_obs[PREY][col][row] > 0:
