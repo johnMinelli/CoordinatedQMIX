@@ -5,6 +5,8 @@ import numpy as np
 import torch
 from torch.optim import lr_scheduler
 
+SOLO = 0
+TOGETHER = 1
 
 def fix_random(seed: int):
     """Fix all the possible sources of randomness.

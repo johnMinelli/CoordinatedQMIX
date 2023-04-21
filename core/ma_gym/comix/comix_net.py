@@ -1,4 +1,5 @@
 from core.ma_gym.comix.comix_modules import *
+from utils.utils import TOGETHER, SOLO
 
 
 class QMixer(nn.Module):
@@ -119,13 +120,10 @@ class QPolicy(nn.Module):
             elif 'weight' in name:
                 nn.init.orthogonal_(param)
 
-    def get_policy_parameters(self):
+    def get_policy1_parameters(self):
         policy_net_params = []
         policy_net_params += self.input_processor.parameters()
         policy_net_params += self.ma_q.parameters()
-        policy_net_params += self.intent_extractor.parameters()
-        # policy_net_params += self.co_q_net.parameters()
-        policy_net_params += self.co_q_linear.parameters()
 
         return policy_net_params
 
@@ -134,6 +132,14 @@ class QPolicy(nn.Module):
         coordinator_net_params += self.ma_coordinator.parameters()
 
         return coordinator_net_params
+
+    def get_policy2_parameters(self):
+        policy_net_params = []
+        policy_net_params += self.intent_extractor.parameters()
+        # policy_net_params += self.co_q_net.parameters()
+        policy_net_params += self.co_q_linear.parameters()
+
+        return policy_net_params
 
     def to(self, device):
         self._device = device
@@ -270,25 +276,25 @@ class QPolicy(nn.Module):
 
         # use coordination mask to 'communicate' (selectively allow communication) and improve your choices
         # temporal_delays = torch.random().to(self._device) if tdt else None
-        qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, blind_coord_masks)
+        qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, blind_coord_masks)
         if eval_coord:
             with torch.no_grad():
                 if self.eval_coord_mask == "true":
-                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
+                    inv_qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "inverse":
-                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
+                    inv_qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "optout":
                     inv_qs = []
                     for i in range(self.num_agents):
                         mask = blind_coord_masks.clone()
                         mask[:, i] = ~mask[:, i]
-                        inv_qs.append(self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
+                        inv_qs.append(self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
                     inv_qs = torch.cat(inv_qs, dim=2)
         else:
             inv_qs = None
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
-        return qs, rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3)), ae_loss
+        return [solo_qs, qs], rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3)), ae_loss
 
     def sample_action_from_qs(self, qs):
         """Compute the probability distribution from Q values and sample to obtain the action."""
@@ -302,12 +308,12 @@ class QPolicy(nn.Module):
         """Predict Qs and from those sample an action with a certain temperature."""
         qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask)
         # sample action to use in the env from q
-        action = self.sample_action_from_qs(qs).squeeze()
+        action = self.sample_action_from_qs(qs[TOGETHER]).squeeze()
         return action.detach(), rnn_hxs.detach(), glob_rnn_hxs.detach()
 
     def eval_action(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
         """Off policy call returning Q of given actions."""
-        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
+        qs, rnn_hxs, _, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
         # gather q of action passed
-        q_a = qs.gather(-1, actions.long()).squeeze(-1)
-        return q_a, rnn_hxs, glob_rnn_hxs
+        q_a = [qs[SOLO].gather(-1, actions.long()).squeeze(-1), qs[TOGETHER].gather(-1, actions.long()).squeeze(-1)]
+        return q_a, rnn_hxs
