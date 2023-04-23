@@ -42,7 +42,7 @@ class PredatorPrey(gym.Env):
 
     def __init__(self, grid_shape=(5, 5), n_agents=2, n_preys=1, prey_move_probs=(0.175, 0.175, 0.175, 0.175, 0.3),
                  full_observable=False, penalty=-0.5, step_cost=-0.01, prey_capture_reward=5, prey_tag_reward=0.1,
-                 wall_percentage=5, max_steps=100, agent_view_range=(5, 5)):
+                 max_steps=100, agent_view_range=(5, 5)):
         assert len(grid_shape) == 2, 'expected a tuple of size 2 for grid_shape, but found {}'.format(grid_shape)
         assert len(agent_view_range) == 2, 'expected a tuple of size 2 for agent view mask,' \
                                           ' but found {}'.format(agent_view_range)
@@ -51,7 +51,6 @@ class PredatorPrey(gym.Env):
         assert 0 < agent_view_range[1] <= grid_shape[1], 'agent view mask has to be within (0,{}]'.format(grid_shape[1])
 
         self._grid_shape = grid_shape
-        self.wall_percentage = wall_percentage
         self.n_agents = n_agents
         self.n_preys = n_preys
         self._max_steps = max_steps
@@ -74,7 +73,6 @@ class PredatorPrey(gym.Env):
         self.viewer = None
         self.full_observable = full_observable
 
-        # agent pos (2), prey (25), step (1)
         mask_size = np.prod(self._agent_view_range)
         self._obs_high = np.array([1., 1.] + [1.] * mask_size * 2, dtype=np.float32)
         self._obs_low = np.array([0., 0.] + [0.] * mask_size * 2, dtype=np.float32)
@@ -117,25 +115,25 @@ class PredatorPrey(gym.Env):
                     fill_cell(self._base_img, (col, row), cell_size=CELL_SIZE, fill=WALL_COLOR)
 
     def __create_grid(self):
-        _grid = np.zeros((3, *self._grid_shape))
-        # add walls in ransom positions
-        random_walls = int(round(self._grid_shape[0] * self._grid_shape[1] * self.wall_percentage / 100))
-        for i in range(random_walls):
-            col = random.randint(0, self._grid_shape[0]-1)
-            row = random.randint(0, self._grid_shape[1]-1)
-            _grid[WALL][col][row] = 1
+        x, y = self._grid_shape
+        _grid = np.zeros((3, x, y))
+        # add center walls
+        if x >= 8 and y >= 8:
+            for col in range(3, x-3):
+                for row in range(3, y-3):
+                    _grid[WALL][col][row] = 1
         return _grid
 
     def __init_full_obs(self):
         self._full_obs = self.__create_grid()
 
+        while True:
+            pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
+                   self.np_random.randint(0, self._grid_shape[1] - 1)]
+            if self._is_cell_preyless(pos) and not self._wall_exists(pos):
+                break
         for agent_i in range(self.n_agents):
-            while True:
-                pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
-                       self.np_random.randint(0, self._grid_shape[1] - 1)]
-                if self._is_cell_preyless(pos) and not self._wall_exists(pos):
-                    self.agent_pos[agent_i] = pos
-                    break
+            self.agent_pos[agent_i] = pos
             self.__update_agent_view(agent_i)
 
         for prey_i in range(self.n_preys):
