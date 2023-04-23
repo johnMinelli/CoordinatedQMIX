@@ -1,5 +1,4 @@
 from core.ma_gym.comix.comix_modules import *
-from utils.utils import TOGETHER, SOLO
 
 
 class QMixer(nn.Module):
@@ -8,8 +7,9 @@ class QMixer(nn.Module):
         if model_params is None:
             model_params = {}
         self.num_agents = len(observation_space)
+        self.state_size = sum(np.prod(_.shape) for _ in observation_space.values())
         self.hidden_size = model_params.get("hidden_size", 32)
-        self.state_size = self.hidden_size*4
+        # self.state_size = self.hidden_size*4
 
         self.hyper_w_1 = nn.Sequential(nn.Linear(self.state_size, self.hidden_size * 2 * self.num_agents),
                                        nn.ReLU(),
@@ -71,7 +71,7 @@ class QPolicy(nn.Module):
         self.obs_size = np.prod(self.obs_shape)
         self.action_space = action_space
         self.action_size = list(self.action_space.values())[0].n  # this breaks action diversity for agents
-        self.hidden_size = self.solo_recurrent_size = model_params.get("hidden_size", 64)
+        self.hidden_size_t1 = self.hidden_size_t2 = model_params.get("hidden_size", 64)
         self.coord_recurrent_size = model_params.get("coord_recurrent_size", 256)
         self.shared_comm_ae = model_params.get("ae_comm", False)
         self.cnn_input_proc = model_params.get("cnn_input_proc", False)
@@ -82,35 +82,36 @@ class QPolicy(nn.Module):
 
         # (1) preprocess input to extract relevant features (shared)
         if self.cnn_input_proc:
-            self.input_processor = CNNProc(3, self.hidden_size, size=model_params.get("input_proc_size", 0))
+            self.input_processor = CNNProc(3, self.hidden_size_t1, size=model_params.get("input_proc_size", 0))
         else:
-            self.input_processor = FCProc(self.obs_size, self.hidden_size, size=model_params.get("input_proc_size", 0))
+            self.input_processor = FCProc(self.obs_size, self.hidden_size_t1, size=model_params.get("input_proc_size", 0))
         # (2) outgoing communication
         if self.shared_comm_ae:
             self.comm_size = model_params.get("ae_comm_size", 16)
-            self.ae = EncoderDecoder(self.hidden_size+self.action_size, self.comm_size)
+            self.ae = EncoderDecoder(self.hidden_size_t1+self.action_size, self.comm_size)
         else:
             # in theory the msg is formed as concatenation of observation and action
             # i.e. self.comm_size = self.obs_size+self.action_size
             # in practice the message sent is already the final processed_input+actions for sake of computational effort
-            self.comm_size = self.hidden_size+self.action_size
+            self.comm_size = self.hidden_size_t1+self.action_size
         # (3) incoming communication
         self._ids_one_hot = torch.eye(self.num_agents).to(self._device)
         self.plan_size = self.num_agents+self.comm_size  # agent one_hot identifier + hidden + action one_hot
 
         # Q network to take decisions independently of others
-        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size)
+        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size_t1)
         # Produce the coordination mask
         self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size)
         # Coordinated Q network to `slightly` adjust your decisions
-        self.co_q_net = _to_ma(nn.GRUCell, (self.plan_size, self.solo_recurrent_size), {})
-        self.intent_extractor = nn.Sequential(_init_fc_norm(nn.Linear(self.plan_size, self.solo_recurrent_size)),
+        self.co_q_net = _to_ma(nn.GRUCell, (self.plan_size, self.hidden_size_t2), {})
+        self.intent_extractor = nn.Sequential(_init_fc_norm(nn.Linear(self.plan_size, self.hidden_size_t2)),
                                               nn.ReLU(),
-                                              _init_fc_norm(nn.Linear(self.solo_recurrent_size, self.solo_recurrent_size)))
+                                              _init_fc_norm(nn.Linear(self.hidden_size_t2, self.hidden_size_t2)))
         self.co_q_linear = nn.ModuleList([
-            nn.Sequential(_init_fc_norm(nn.Linear(self.solo_recurrent_size*2, self.solo_recurrent_size)),
+            nn.Sequential(_init_fc_norm(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
                           nn.ReLU(),
-                          _init_fc_norm(nn.Linear(self.solo_recurrent_size, action_space[id].n))
+                          _init_fc_norm(nn.Linear(self.hidden_size_t2, action_space[id].n)),
+                          nn.Sigmoid()
             ) for id in agents_ids])
 
         # w init
@@ -120,21 +121,16 @@ class QPolicy(nn.Module):
             elif 'weight' in name:
                 nn.init.orthogonal_(param)
 
-    def get_policy1_parameters(self):
-        policy_net_params = []
-        policy_net_params += self.input_processor.parameters()
-        policy_net_params += self.ma_q.parameters()
-
-        return policy_net_params
-
     def get_coordinator_parameters(self):
         coordinator_net_params = []
         coordinator_net_params += self.ma_coordinator.parameters()
 
         return coordinator_net_params
 
-    def get_policy2_parameters(self):
+    def get_policy_parameters(self):
         policy_net_params = []
+        policy_net_params += self.input_processor.parameters()
+        policy_net_params += self.ma_q.parameters()
         policy_net_params += self.intent_extractor.parameters()
         # policy_net_params += self.co_q_net.parameters()
         policy_net_params += self.co_q_linear.parameters()
@@ -152,13 +148,6 @@ class QPolicy(nn.Module):
 
     def init_hidden(self, batch_size=1):
         return self.ma_q.init_hidden(batch_size), self.ma_coordinator.init_hidden(batch_size)
-
-    def init_comm_msgs(self, batch_size=1):
-        if self.shared_comm_ae:
-            return torch.zeros((batch_size, self.num_agents, self.hidden_size+list(self.action_space.values())[0].n
-                if self.training else self.comm_size)).to(self._device)
-        else:
-            return torch.zeros((batch_size, self.num_agents, self.hidden_size+list(self.action_space.values())[0].n)).to(self._device)
 
     def _process_msgs(self, comm):
         proc_comm = []
@@ -199,7 +188,7 @@ class QPolicy(nn.Module):
             action_logits_coord = action_logits[:, i].clone()
             if not torch.equal(rnn_hxs, hiddens[:, i]):
                 action_logits_coord[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)] += self.co_q_linear[i](rnn_hxs[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)])
-            q_values.append(action_logits_coord.unsqueeze(1))  # NOTE xke questo funzioni il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
+            q_values.append(action_logits_coord.unsqueeze(1))  # NOTE to make it work il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
         q_values = torch.cat(q_values, dim=1)
 
         return q_values
@@ -209,7 +198,7 @@ class QPolicy(nn.Module):
         # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
         b,n,h = comm_plans.shape
         comm = comm_plans.unsqueeze(1).expand((b, n, n, h))
-        intents = torch.zeros(b * n * n, self.solo_recurrent_size, device=self._device)
+        intents = torch.zeros(b * n * n, self.hidden_size_t2, device=self._device)
         masks = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(b, 1, 1).unsqueeze(-1)
         comm = (comm * masks).reshape(b * n * n, -1)
         intents[comm.any(-1)] = self.intent_extractor(comm[comm.any(-1)])
@@ -221,7 +210,7 @@ class QPolicy(nn.Module):
             action_logits_coord = action_logits[:, i].clone()
             if torch.any(intents[:, i]):
                 rnn_hxs = hiddens[:, i].clone()
-                action_logits_coord += self.co_q_linear[i](torch.cat([rnn_hxs, intents[:, i]], -1))
+                action_logits_coord *= 1+self.co_q_linear[i](torch.cat([rnn_hxs, intents[:, i]], -1))
             q_values.append(action_logits_coord.unsqueeze(1))
         q_values = torch.cat(q_values, dim=1)
 
@@ -248,7 +237,7 @@ class QPolicy(nn.Module):
         solo_actions_one_hot = torch.zeros_like(solo_qs).scatter_(-1, solo_actions.type(torch.int64).unsqueeze(-1), 1.)
 
         # --- (2) Communication ---
-        if self.shared_comm_ae:  # TODO should encode both processed obs and id? even if you are done the msg is created
+        if self.shared_comm_ae:
             current_plans = []
             plans = torch.cat([self._ids_one_hot.repeat(bs, 1, 1), x, solo_actions_one_hot], dim=-1)
             for i in range(self.num_agents):
@@ -276,25 +265,25 @@ class QPolicy(nn.Module):
 
         # use coordination mask to 'communicate' (selectively allow communication) and improve your choices
         # temporal_delays = torch.random().to(self._device) if tdt else None
-        qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, blind_coord_masks)
+        qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, blind_coord_masks)
         if eval_coord:
             with torch.no_grad():
                 if self.eval_coord_mask == "true":
-                    inv_qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
+                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "inverse":
-                    inv_qs = self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
+                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
                 elif self.eval_coord_mask == "optout":
                     inv_qs = []
                     for i in range(self.num_agents):
                         mask = blind_coord_masks.clone()
                         mask[:, i] = ~mask[:, i]
-                        inv_qs.append(self._modify_qs2(solo_qs.detach(), rnn_hxs.detach(), proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
+                        inv_qs.append(self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
                     inv_qs = torch.cat(inv_qs, dim=2)
         else:
             inv_qs = None
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
-        return [solo_qs, qs], rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3)), ae_loss
+        return qs, rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3)), ae_loss
 
     def sample_action_from_qs(self, qs):
         """Compute the probability distribution from Q values and sample to obtain the action."""
@@ -303,17 +292,16 @@ class QPolicy(nn.Module):
         action = torch.multinomial(torch.softmax(qs, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
         return action
 
-
     def take_action(self, input, rnn_hxs, glob_rnn_hxs, dones_mask):
         """Predict Qs and from those sample an action with a certain temperature."""
         qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask)
         # sample action to use in the env from q
-        action = self.sample_action_from_qs(qs[TOGETHER]).squeeze()
+        action = self.sample_action_from_qs(qs).squeeze()
         return action.detach(), rnn_hxs.detach(), glob_rnn_hxs.detach()
 
     def eval_action(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
         """Off policy call returning Q of given actions."""
-        qs, rnn_hxs, _, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
+        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
         # gather q of action passed
-        q_a = [qs[SOLO].gather(-1, actions.long()).squeeze(-1), qs[TOGETHER].gather(-1, actions.long()).squeeze(-1)]
-        return q_a, rnn_hxs
+        q_a = qs.gather(-1, actions.long()).squeeze(-1)
+        return q_a, rnn_hxs, glob_rnn_hxs
