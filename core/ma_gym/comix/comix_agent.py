@@ -21,7 +21,7 @@ class CoordQMixGymAgent(BaseAgent):
         self.q_params = {"eval_coord_mask": opt.coord_mask_type, "ae_comm": bool(opt.ae_comm), "hidden_size": opt.hi, "coord_recurrent_size": opt.hc, "ae_comm_size": 16, "input_proc_size": opt.hs, "cnn_input_proc": bool(opt.cnn_input_proc)}
         self.mixer_params = {"hidden_size": opt.hm}
 
-        # Setup multi agent modules (dimension with n agents)
+        # Create multi-agent networks (stacked individually for n agents)
         self.q_policy = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.q_params).to(device)
         self.q_policy_target = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.q_params).to(device)
         self.q_policy_target.load_state_dict(self.q_policy.state_dict())
@@ -30,21 +30,21 @@ class CoordQMixGymAgent(BaseAgent):
         self.mix_net = QMixer(env.observation_space, model_params=self.mixer_params).to(device)
         self.mix_net_target = QMixer(env.observation_space, model_params=self.mixer_params).to(device)
         self.mix_net_target.load_state_dict(self.mix_net.state_dict())
-        self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
 
-        # Load or init
+        # Load weights
         self.training = opt.isTrain
-        if not opt.isTrain or opt.continue_train is not None:
-            if opt.isTrain:
+        self.fine_tuning = opt.fine_tune if self.training else False
+        if self.training:
+            self.backup_dir = opt.backup_dir
+            if opt.continue_train is not None:
                 self.start_epoch = self.load_model(self.backup_dir, "policy", opt.continue_train)
-            else:
-                self.load_model(opt.models_path, "policy", opt.model_epoch)
-        # else:
-        #     init_weights(self.model, init_type="normal")
+        else:
+            self.load_model(opt.models_path, "policy", opt.model_epoch)
 
+        # Setup networks train/eval states
         self.q_policy_target.eval()
         self.mix_net_target.eval()
-        if opt.isTrain:
+        if self.training:
             self.q_policy.train()
             self.mix_net.train()
             # initialize optimizers
@@ -68,29 +68,40 @@ class CoordQMixGymAgent(BaseAgent):
             for i, optimizer in enumerate(self.optimizers):
                 if self.start_epoch > 0: optimizer.param_groups[0].update({"initial_lr": self.initial_lr[i]})
                 self.schedulers.append(get_scheduler(optimizer, opt, self.start_epoch-1))
-        else:
+
+        if self.fine_tuning:
+            for param in []+list(self.mix_net.parameters())+self.q_policy.get_policy_parameters()+self.q_policy.get_coordinator_parameters():
+                param.requires_grad = False
+            for param in list(self.q_policy.co_q_linear.parameters()):
+                param.requires_grad = True
+                self.q_policy.delayed_comm = True
+
+        if not self.training and not self.fine_tuning:
             self.q_policy.eval()
+
         print_network(self.q_policy)
         print_network(self.mix_net)
 
         # train cycle params
-        self.no_op = env.no_op
-        self.K_epochs = opt.K_epochs  # 0.02
-        self.coord_K_epochs = opt.coord_K_epochs  # 0.1
-        self.batch_size = opt.batch_size
-        self.warm_up_steps = opt.min_buffer_len
-        self.gamma = opt.gamma
-        self.chunk_size = opt.chunk_size  # 3,10
-        self.grad_clip_norm = opt.grad_clip_norm  # 5
-        self.lambda_coord = opt.lambda_coord
-        self.lambda_q = opt.lambda_q/self.chunk_size
-        self.tau = opt.tau
-        self.coord_loss = torch.zeros(1, device=device)
-        self.loss_coordinator = torch.zeros(1, device=device)
-        self.ae_loss = torch.zeros(1, device=device)
-        self.coord_stats = {}
-        self.updates = 0
-        self.coord_updates = 0
+        if self.training or self.fine_tuning:
+            self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
+            self.no_op = env.no_op
+            self.K_epochs = opt.K_epochs  # 0.02
+            self.coord_K_epochs = opt.coord_K_epochs  # 0.1
+            self.batch_size = opt.batch_size
+            self.warm_up_steps = opt.min_buffer_len
+            self.gamma = opt.gamma
+            self.chunk_size = opt.chunk_size  # 3,10
+            self.grad_clip_norm = opt.grad_clip_norm  # 5
+            self.lambda_coord = opt.lambda_coord
+            self.lambda_q = opt.lambda_q/self.chunk_size
+            self.tau = opt.tau
+            self.coord_loss = torch.zeros(1, device=device)
+            self.loss_coordinator = torch.zeros(1, device=device)
+            self.ae_loss = torch.zeros(1, device=device)
+            self.coord_stats = {}
+            self.updates = 0
+            self.coord_updates = 0
 
         # assert self.warm_up_steps > (self.batch_size * self.chunk_size) * 2, "Set a the min buffer length to be greater then `(batch_size x chunk_size)x2` to avoid overlappings"
 
@@ -113,7 +124,8 @@ class CoordQMixGymAgent(BaseAgent):
         self.q_policy.train() if self.training else self.q_policy.eval()
 
     def save_model(self, prefix: str = "", model_episode: int = -1):
-        """Save the model""" # TODO
+        """Save the model"""
+        assert self.training or self.fine_tuning, "Calling `save_model` method is not allowed in evaluation mode."
         save_path_p = self.backup_dir / "{}_q_{:04}_model".format(prefix, model_episode)
         torch.save(self.q_policy.state_dict(), save_path_p)
         save_path_m = self.backup_dir / "{}_mix_{:04}_model".format(prefix, model_episode)
@@ -146,19 +158,24 @@ class CoordQMixGymAgent(BaseAgent):
         for param_target, param in zip(self.mix_net_target.parameters(), self.mix_net.parameters()):
             param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
 
-    def take_action(self, observation, hidden, dones):
+    def take_action(self, observation, hidden, dones, prev_intents=None, comm_delays=None):
         observation = observation.unsqueeze(0)
         hidden, coordinator_hidden = hidden
         dones_mask = (1-dones).unsqueeze(0)
-        co_q_input = None
-        if not self.training:
-            actions, hidden, coordinator_hidden = self.q_policy.take_action(observation, hidden, coordinator_hidden, dones_mask)
-        else:
-            # Act then do on-policy optimization for Coordinator and Autoencoder
-            q_out, hidden, coordinator_hidden, inv_q_out, coord_masks, co_q_input, ae_loss = self.q_policy(observation, hidden, coordinator_hidden, dones_mask, eval_coord=True, tdt=True)  # explore both actions and coordination
-            actions = self.q_policy.sample_action_from_qs(q_out).squeeze().detach()
+        if comm_delays is not None: comm_delays = comm_delays.unsqueeze(0)
 
-            if self.memory.size() >= self.warm_up_steps:  # avoid coordinator optimization while Q is still dumb
+        if not self.training:
+            actions, hidden, coordinator_hidden, additional_input = self.q_policy.take_action(observation, hidden, coordinator_hidden, dones_mask, prev_intents, comm_delays)
+        else:
+            # Act, then do on-policy optimization for Coordinator and Autoencoder
+            coord_training = not self.fine_tuning and self.memory.size() >= self.warm_up_steps
+            ae_training = not self.fine_tuning and self.q_policy.shared_comm_ae
+
+            q_out, hidden, coordinator_hidden, inv_q_out, coord_masks, additional_input, ae_loss = self.q_policy(observation, hidden, coordinator_hidden, dones_mask, train_coord=coord_training, train_ae=ae_training)  # explore both actions and coordination
+            actions = self.q_policy.sample_action_from_qs(q_out)
+
+            # optimize the coordination module while acting (avoid while Q is still dumb)
+            if coord_training:
                 # optimize the coordinator while acting using the max q differences given by a mask respect its inverse
                 dones_mask = dones_mask.squeeze(-1)
                 max_q_a = q_out.max(dim=-1)[0] * dones_mask
@@ -188,16 +205,16 @@ class CoordQMixGymAgent(BaseAgent):
                     self.loss_coordinator = torch.zeros(1, device=self.loss_coordinator.device)
 
             # optimize the ae while acting
-            if self.q_policy.shared_comm_ae:
+            if ae_training:
                 self.optimizer_ae.zero_grad()
                 ae_loss.backward()
                 self.optimizer_ae.step()
                 self.ae_loss += ae_loss
 
-        return actions.unsqueeze(-1).detach(), (hidden.detach(), coordinator_hidden.detach()), co_q_input
+        return actions.squeeze().unsqueeze(-1).detach(), (hidden.detach(), coordinator_hidden.detach()), additional_input
 
     def step(self, state, add_in, action, reward, next_state, done):
-        self.memory.put(state, *([a.squeeze(0) for a in add_in] if add_in is not None else [None, None]), action, reward, next_state, done)
+        self.memory.put(state, *([a.squeeze(0) for a in add_in[:2]] if add_in is not None else [None, None]), action, reward, next_state, done)
 
         # drain ea loss got from action in order for logging
         losses = {"ae_loss": self.ae_loss.item(), "coord_loss": self.coord_loss.item()}
@@ -228,7 +245,6 @@ class CoordQMixGymAgent(BaseAgent):
                         done_masks[:, step_i][torch.all((1-done_masks[:, step_i]).squeeze(-1).bool(),-1)] = 1  # fresh start when needed
 
                         # q policy training with respect the target q policy network
-                        # time_gaps = random([.5,.25,.125,.075,.075])
                         q_a, hidden, coord_hidden = self.q_policy.eval_action(states[:, step_i], hidden, coord_hidden, done_masks[:, step_i], comm[:, step_i], coord_masks[:, step_i], actions[:, step_i])
                         q_a[~done_masks[:, step_i].squeeze(-1).bool()] = 0
                         s_done_masked = (states[:, step_i]*done_masks[:, step_i])+(-1*(~done_masks[:, step_i].bool()))

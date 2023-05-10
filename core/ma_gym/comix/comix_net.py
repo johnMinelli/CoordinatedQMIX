@@ -76,7 +76,14 @@ class QPolicy(nn.Module):
         self.shared_comm_ae = model_params.get("ae_comm", False)
         self.cnn_input_proc = model_params.get("cnn_input_proc", False)
         self.eval_coord_mask = model_params.get("eval_coord_mask", False)
+        # setup probabilities tensor for training
+        self.delayed_comm = False
+        self.comm_delay_factors = torch.Tensor([1, 0.75, 0.5, 0.25, 0.125]).to(self._device)
+        _skewness = torch.tensor([0.75, 0.15, 0.03, 0.001, 0.00001])
+        self.comm_delays_probs = torch.exp(_skewness.log() - torch.max(_skewness.log()))
+        self.comm_delays_probs /= torch.sum(self.comm_delays_probs).to(self._device)  # (.8, .16, .03, .001, .00001)
 
+        # setup network modules
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
         _init_fc_norm = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0))
 
@@ -141,6 +148,8 @@ class QPolicy(nn.Module):
         self._device = device
         super().to(device)
         # ...the standard recursion applied to submodules set only the modules parameters and not the `_device` variable
+        self.comm_delay_factors = self.comm_delay_factors.to(device)
+        self.comm_delays_probs = self.comm_delays_probs.to(device)
         self._ids_one_hot = self._ids_one_hot.to(device)
         self.ma_q.to(device)
         self.ma_coordinator.to(device)
@@ -149,7 +158,21 @@ class QPolicy(nn.Module):
     def init_hidden(self, batch_size=1):
         return self.ma_q.init_hidden(batch_size), self.ma_coordinator.init_hidden(batch_size)
 
-    def _process_msgs(self, comm):
+    def _encode_msgs(self, x, solo_actions_one_hot, train_ae=False):
+        ae_loss = 0
+        if self.shared_comm_ae:
+            current_plans = []
+            plans = torch.cat([self._ids_one_hot.repeat(x.size(0), 1, 1), x, solo_actions_one_hot], dim=-1)
+            for i in range(self.num_agents):
+                enc_x, dec_x = self.ae(plans[:, i])
+                if train_ae: ae_loss += F.mse_loss(dec_x, plans[:, i])
+                current_plans.append((dec_x if self.training else enc_x).unsqueeze(1))  # (*)
+            current_plans = torch.cat(current_plans, dim=1).detach()
+        else:
+            current_plans = torch.cat([self._ids_one_hot.repeat(x.size(0), 1, 1), x, solo_actions_one_hot], dim=-1).detach()  # (**)
+        return current_plans, ae_loss
+
+    def _decode_msgs(self, comm):
         proc_comm = []
         if self.shared_comm_ae:
             if not self.training:
@@ -170,66 +193,103 @@ class QPolicy(nn.Module):
             proc_comm = comm
         return proc_comm
 
-    def _modify_qs(self, action_logits, hiddens, comm_plans, masks):
+    # def _modify_qs(self, action_logits, hiddens, comm_plans, masks):
+    #     # Compute q modifications on the base of the coordination induced by the coordination boolean mask
+    #     # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
+    #     q_values = []
+    #     for i, id in enumerate(self.agents_ids):
+    #         rnn_hxs = hiddens[:, i].clone()
+    #         for j in range(self.num_agents):
+    #             if i == j: continue
+    #             comm_plans_masked = comm_plans[:, j] * masks[i, j]
+    #             batch_mask = torch.any(comm_plans_masked, -1).unsqueeze(-1)
+    #             batch_comm_plans_masked = torch.masked_select(comm_plans_masked, batch_mask).reshape(-1, comm_plans_masked.size(-1))
+    #             batch_rnn_hxs = torch.masked_select(rnn_hxs, batch_mask).reshape(-1, rnn_hxs.size(-1))
+    #             if len(batch_comm_plans_masked) > 0:  # certain versions of PyTorch don't like empty batches
+    #                 batch_rnn_hxs = self.co_q_net[i](batch_comm_plans_masked, batch_rnn_hxs)
+    #                 rnn_hxs = rnn_hxs.masked_scatter(batch_mask, batch_rnn_hxs)
+    #         action_logits_coord = action_logits[:, i].clone()
+    #         if not torch.equal(rnn_hxs, hiddens[:, i]):
+    #             action_logits_coord[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)] += self.co_q_linear[i](rnn_hxs[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)])
+    #         q_values.append(action_logits_coord.unsqueeze(1))  # NOTE to make it work il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
+    #     q_values = torch.cat(q_values, dim=1)
+    # 
+    #     return q_values
+
+    # def _modify_qs2(self, action_logits, hiddens, comm_plans, masks, temporal_delays=None):
+    #     # Compute q modifications on the base of the coordination induced by the coordination boolean mask
+    #     # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
+    #     b,n,h = comm_plans.shape
+    #     comm = comm_plans.unsqueeze(1).expand((b, n, n, h))
+    #     intents = torch.zeros(b * n * n, self.hidden_size_t2, device=self._device)
+    #     masks = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(b, 1, 1).unsqueeze(-1)
+    #     comm = (comm * masks).reshape(b * n * n, -1)
+    #     intents[comm.any(-1)] = self.intent_extractor(comm[comm.any(-1)])
+    #     intents = intents.reshape(b, n, n, -1) / (temporal_delays if temporal_delays is not None else 1)
+    #     intents = intents.sum(-2)
+    # 
+    #     q_values = []
+    #     for i, id in enumerate(self.agents_ids):
+    #         action_logits_coord = action_logits[:, i].clone()
+    #         if torch.any(intents[:, i]):
+    #             rnn_hxs = hiddens[:, i].clone()
+    #             action_logits_coord *= 1+self.co_q_linear[i](torch.cat([rnn_hxs, intents[:, i]], -1))
+    #         q_values.append(action_logits_coord.unsqueeze(1))
+    #     q_values = torch.cat(q_values, dim=1)
+    # 
+    #     return q_values
+
+    def _coordinate_intentions(self, action_logits, hiddens, intents, coord_masks, dones_mask, train_coord=False):
         # Compute q modifications on the base of the coordination induced by the coordination boolean mask
         # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
-        q_values = []
-        for i, id in enumerate(self.agents_ids):
-            rnn_hxs = hiddens[:, i].clone()
-            for j in range(self.num_agents):
-                if i == j: continue
-                comm_plans_masked = comm_plans[:, j] * masks[i, j]
-                batch_mask = torch.any(comm_plans_masked, -1).unsqueeze(-1)
-                batch_comm_plans_masked = torch.masked_select(comm_plans_masked, batch_mask).reshape(-1, comm_plans_masked.size(-1))
-                batch_rnn_hxs = torch.masked_select(rnn_hxs, batch_mask).reshape(-1, rnn_hxs.size(-1))
-                if len(batch_comm_plans_masked) > 0:  # certain versions of PyTorch don't like empty batches
-                    batch_rnn_hxs = self.co_q_net[i](batch_comm_plans_masked, batch_rnn_hxs)
-                    rnn_hxs = rnn_hxs.masked_scatter(batch_mask, batch_rnn_hxs)
-            action_logits_coord = action_logits[:, i].clone()
-            if not torch.equal(rnn_hxs, hiddens[:, i]):
-                action_logits_coord[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)] += self.co_q_linear[i](rnn_hxs[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)])
-            q_values.append(action_logits_coord.unsqueeze(1))  # NOTE to make it work il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
-        q_values = torch.cat(q_values, dim=1)
+        def update_q(masks):
+            # apply coordination mask to intents
+            bs, n = intents.shape[:2]
+            masked_intents = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(bs, 1, 1).unsqueeze(-1) * intents.clone()
+            # sum over agents dimension
+            masked_intents = masked_intents.mean(-2)  # TODO
+            q_values = []
+            for i, id in enumerate(self.agents_ids):
+                action_logits_coord = action_logits[:, i].clone()
+                if torch.any(masked_intents[:, i]):
+                    rnn_hxs = hiddens[:, i].clone()
+                    action_logits_coord *= 1+self.co_q_linear[i](torch.cat([rnn_hxs, masked_intents[:, i]], -1))
+                q_values.append(action_logits_coord.unsqueeze(1))
+            q_values = torch.cat(q_values, dim=1)
+            return q_values
 
-        return q_values
+        q_values = update_q(coord_masks)
+        if train_coord:
+            done_matrix = dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0)
+            with torch.no_grad():
+                if self.eval_coord_mask == "true":
+                    inverse_q_values = update_q((torch.ones_like(coord_masks) * done_matrix.unsqueeze(-1)).bool())
+                elif self.eval_coord_mask == "inverse":
+                    inverse_q_values = update_q((~coord_masks * done_matrix.unsqueeze(-1)).bool())
+                elif self.eval_coord_mask == "optout":
+                    inverse_q_values = []
+                    for i in range(self.num_agents):
+                        mask = coord_masks.clone()
+                        mask[:, i] = ~mask[:, i]
+                        inverse_q_values.append(update_q((mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
+                    inverse_q_values = torch.cat(inverse_q_values, dim=2)
+        else:
+            inverse_q_values = None
 
-    def _modify_qs2(self, action_logits, hiddens, comm_plans, masks, temporal_delays=None):
-        # Compute q modifications on the base of the coordination induced by the coordination boolean mask
-        # `action_logits` (req_grad), `masks` (detached), `comm_msgs` (detached)
-        b,n,h = comm_plans.shape
-        comm = comm_plans.unsqueeze(1).expand((b, n, n, h))
-        intents = torch.zeros(b * n * n, self.hidden_size_t2, device=self._device)
-        masks = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(b, 1, 1).unsqueeze(-1)
-        comm = (comm * masks).reshape(b * n * n, -1)
-        intents[comm.any(-1)] = self.intent_extractor(comm[comm.any(-1)])
-        intents = intents.reshape(b, n, n, -1) / (temporal_delays if temporal_delays is not None else 1)
-        intents = intents.sum(-2)
+        return q_values, inverse_q_values
 
-        q_values = []
-        for i, id in enumerate(self.agents_ids):
-            action_logits_coord = action_logits[:, i].clone()
-            if torch.any(intents[:, i]):
-                rnn_hxs = hiddens[:, i].clone()
-                action_logits_coord *= 1+self.co_q_linear[i](torch.cat([rnn_hxs, intents[:, i]], -1))
-            q_values.append(action_logits_coord.unsqueeze(1))
-        q_values = torch.cat(q_values, dim=1)
-
-        return q_values
-
-    def forward(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, eval_coord=False, tdt=False):
-        assert not eval_coord or eval_coord and (comm_plans is None and coord_masks is None), "The arguments combination passed do not match a std wanted behaviour."
+    def forward(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, rec_intents=None, comm_ts_delays=None, train_coord=False, train_ae=False):
+        assert not train_coord or train_coord and (comm_plans is None and coord_masks is None), "The arguments combination passed do not match a std wanted behaviour."
         assert not (comm_plans is None and coord_masks is None) or (comm_plans is None and coord_masks is None), "The arguments combination passed is not valid."
-        ae_loss = 0
-        distance_loss = 0
 
         # shared input processing
-        bs = input.size(0)
+        bs, n = state.shape[:2]
         if self.cnn_input_proc:
-            input = input.reshape(bs * self.num_agents, *self.obs_shape).transpose(-1, -3)
+            input = state.reshape(bs * n, *self.obs_shape).transpose(-1, -3)
         else:
-            input = input.reshape(bs * self.num_agents, -1)
+            input = state.reshape(bs * n, -1)
         x = self.input_processor(input)
-        x = x.reshape(bs, self.num_agents, -1)
+        x = x.reshape(bs, n, -1)
 
         # --- (1) Solo action ---
         solo_qs, rnn_hxs = self.ma_q(x, rnn_hxs)
@@ -237,53 +297,35 @@ class QPolicy(nn.Module):
         solo_actions_one_hot = torch.zeros_like(solo_qs).scatter_(-1, solo_actions.type(torch.int64).unsqueeze(-1), 1.)
 
         # --- (2) Communication ---
-        if self.shared_comm_ae:
-            current_plans = []
-            plans = torch.cat([self._ids_one_hot.repeat(bs, 1, 1), x, solo_actions_one_hot], dim=-1)
-            for i in range(self.num_agents):
-                enc_x, dec_x = self.ae(plans[:, i])
-                ae_loss += F.mse_loss(dec_x, plans[:, i])
-                current_plans.append((dec_x if self.training else enc_x).unsqueeze(1))  # (*)
-            current_plans = torch.cat(current_plans, dim=1).detach()
-        else:
-            current_plans = torch.cat([self._ids_one_hot.repeat(bs, 1, 1), x, solo_actions_one_hot], dim=-1).detach()  # (**)
+        current_plans, ae_loss = self._encode_msgs(x, solo_actions_one_hot, train_ae)
 
         # --- (3) Coordination ---
         # retrieve incoming messages: are the current timestep communicated plans
         comm_msgs = current_plans
+
         # process incoming messages from others. Also, they need to be masked with dones
-        proc_comm = (self._process_msgs(comm_msgs) if comm_plans is None else comm_plans) * dones_mask
+        proc_comm = (self._decode_msgs(comm_msgs) if comm_plans is None else comm_plans) * dones_mask
+
+        # produce mask of coordination using incoming messages
         if coord_masks is None:
-            # produce mask of coordination from comm_msgs
             coord_masks, glob_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, glob_rnn_hxs)
             done_matrix = dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0)
             if self.training:  # mask here is for `coord_masks` output variable
                 coord_masks = F.gumbel_softmax(coord_masks, hard=True, dim=-1) * done_matrix.unsqueeze(-1)  # add randomness proportional to logits relative value
-            blind_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord
+            blind_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord, 1=coord
         else:
             blind_coord_masks = coord_masks.permute(1,2,0,3)
 
-        # use coordination mask to 'communicate' (selectively allow communication) and improve your choices
-        # temporal_delays = torch.random().to(self._device) if tdt else None
-        qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, blind_coord_masks)
-        if eval_coord:
-            with torch.no_grad():
-                if self.eval_coord_mask == "true":
-                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (torch.ones_like(blind_coord_masks) * done_matrix.unsqueeze(-1)).bool())
-                elif self.eval_coord_mask == "inverse":
-                    inv_qs = self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (~blind_coord_masks * done_matrix.unsqueeze(-1)).bool())
-                elif self.eval_coord_mask == "optout":
-                    inv_qs = []
-                    for i in range(self.num_agents):
-                        mask = blind_coord_masks.clone()
-                        mask[:, i] = ~mask[:, i]
-                        inv_qs.append(self._modify_qs2(solo_qs, rnn_hxs, proc_comm, (mask * done_matrix.unsqueeze(-1)).bool()).unsqueeze(2))
-                    inv_qs = torch.cat(inv_qs, dim=2)
-        else:
-            inv_qs = None
+        # extract intentions from messages and following the coordination mask use them to update the q values
+        intents = self.intent_extractor(proc_comm.unsqueeze(1).repeat((1, n, 1, 1)))
+        if rec_intents is not None:
+            intents[comm_ts_delays>0] = rec_intents[comm_ts_delays>0]
+        temporal_delays = 1 if comm_ts_delays is None else torch.gather(self.comm_delay_factors, 0, torch.clamp(comm_ts_delays, 0, len(self.comm_delay_factors)-1).long().flatten()).view(bs, n, n, 1).to(self._device)
+        scaled_intents = intents / temporal_delays
+        qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, blind_coord_masks, dones_mask, train_coord)
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
-        return qs, rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3)), ae_loss
+        return qs, rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3), intents), ae_loss
 
     def sample_action_from_qs(self, qs):
         """Compute the probability distribution from Q values and sample to obtain the action."""
@@ -292,16 +334,19 @@ class QPolicy(nn.Module):
         action = torch.multinomial(torch.softmax(qs, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
         return action
 
-    def take_action(self, input, rnn_hxs, glob_rnn_hxs, dones_mask):
-        """Predict Qs and from those sample an action with a certain temperature."""
-        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask)
+    def take_action(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, prev_intents=None, comm_delays=None):
+        """Predict Qs and from those sample an action."""
+        qs, rnn_hxs, glob_rnn_hxs, _, _, additional_input, _ = self.forward(state, rnn_hxs, glob_rnn_hxs, dones_mask, rec_intents=prev_intents, comm_ts_delays=comm_delays)
         # sample action to use in the env from q
-        action = self.sample_action_from_qs(qs).squeeze()
-        return action.detach(), rnn_hxs.detach(), glob_rnn_hxs.detach()
+        action = self.sample_action_from_qs(qs)
+        intents = additional_input[-1]
+        return action.detach(), rnn_hxs.detach(), glob_rnn_hxs.detach(), intents.detach()
 
-    def eval_action(self, input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
+    def eval_action(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
         """Off policy call returning Q of given actions."""
-        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(input, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks)
+        bs, n = state.shape[:2]
+        delays = None if not self.delayed_comm else torch.multinomial(self.comm_delays_probs, num_samples=bs * n * n, replacement=True)
+        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, comm_ts_delays=delays)
         # gather q of action passed
         q_a = qs.gather(-1, actions.long()).squeeze(-1)
         return q_a, rnn_hxs, glob_rnn_hxs
