@@ -14,8 +14,6 @@ class BaseAgent(object):
         self.env = env
         self.device = device
         self.train_mode = opt.isTrain
-        self.backup_dir = Path(os.path.join(opt.save_path, opt.name))
-        mkdirs(self.backup_dir)
         self.n_agents = len(self.env.agents_ids)
         self.start_epoch = 0
 

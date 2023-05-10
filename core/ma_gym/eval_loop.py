@@ -18,19 +18,21 @@ def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Cal
     test_env = env_fn()
     agents = agents_fn(opt, test_env)
     agents_ids = test_env.agents_ids
-    total_rewards = np.zeros(test_env.n_agents)
     success = 0
 
+    logger.valid_start()
     for episode in range(opt.val_episodes):
-        logger.valid_start()
+        total_rewards = np.zeros(test_env.n_agents)
 
         hxs = agents.init_hidden()
+        comm = None
+        delays = torch.zeros(test_env.n_agents,test_env.n_agents).to(_device)+3
         current_state_obs, _, dones, _ = test_env.reset()
         current_state_obs = torch.Tensor(np.stack([current_state_obs[id] for id in agents_ids])).to(_device)
         dones = torch.Tensor(np.expand_dims(np.stack([dones[id] for id in agents_ids]), -1)).to(_device)
         while not dones.all():
 
-            actions, hxs, _ = agents.take_action(current_state_obs, hxs, dones)
+            actions, hxs, add_in = agents.take_action(current_state_obs, hxs, dones, comm, delays)
             next_state_obs, rewards_dict, dones, info = test_env.step(list(map(lambda a: None if dones[a[0]] else a[1][0].cpu().numpy(), enumerate(actions))))
             if opt.render_mode == "human": test_env.render()
             total_rewards += np.array(list(rewards_dict.values()))
@@ -38,9 +40,12 @@ def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Cal
             dones = torch.Tensor(np.expand_dims(np.stack([dones[id] for id in agents_ids]), -1)).to(_device)
 
             current_state_obs = next_state_obs
+            comm = add_in
+            # TODO random delays
             logger.valid_step(1, {})
-        success += test_env.get_success_metric()
-        logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"success": test_env.get_success_metric(), "avg_success": success/episode})
+        # success += test_env.get_success_metric()
+        success += np.sum(total_rewards)
+    logger.valid_stop({"rewards": {k: v for k,v in zip(test_env.agents_ids, total_rewards)}}, {"success": test_env.get_success_metric(), "avg_success": success/(episode+1)})
     test_env.close()
 
 

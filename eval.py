@@ -23,7 +23,7 @@ def main(args):
     if args.tensorboard:
         tb_writer = SummaryWriter()
     else: tb_writer = None
-    logger = Logger(valid=True, episodes=args.episodes, batch_size=args.batch_size, terminal_print_freq=args.print_freq, tensorboard=tb_writer, wand=args.wandb)
+    logger = Logger(valid=True, episodes=args.val_episodes, batch_size=1, terminal_print_freq=args.print_freq, tensorboard=tb_writer, wand=args.wandb)
 
     # Set the seed
     # fix_random(args.seed)

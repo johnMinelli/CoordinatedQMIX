@@ -201,12 +201,10 @@ class Coordinator(nn.Module):
 
     def forward(self, plans, comm_plans, glob_hiddens):
         """
-        :param action_logits: (req_grad) selfish action logits to modify
         :param plans: (detached) current selfish_plans as starting points
         :param comm_plans: (detached for ae / req_grad for fc) other's agents plans to mix with current selfish plans (except self comm_plan)
         :param hiddens: (req_grad) selfish hiddens
         :param glob_hiddens: (req_grad) global hiddens (2n,n,b,h)
-        :param eval_coord: compute policy value also for the opposite mask
         """
         # The coordination part is detached from the rest: it produces only the boolean coord_masks
         glob_rnn_hxs = []

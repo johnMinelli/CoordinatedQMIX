@@ -15,6 +15,7 @@ class Logger(object):
         self.tensorboard = tensorboard
         self.wandb = wand
         self.total_steps = 0
+        self.episode_start(None)
 
         s = 10
         e = 1  # episode bar position
@@ -121,7 +122,8 @@ class Logger(object):
         avg_reward_over_time = avg_reward / episode_time
 
         self.log('Val Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
-                 ' * Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time))
+                 ' * Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
+                 ' ' + ', '.join([str(k)+' : '+str(v) for k,v in num_stats.items()]))
         self._log_stats_to_dashboards(self.total_steps, "Valid", {**tot_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, **num_stats})
 
         # restore values
