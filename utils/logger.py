@@ -98,7 +98,8 @@ class Logger(object):
         avg_metrics = [np.mean(v) for v in list(self.total_metrics.values())] if len(self.total_metrics) > 0 else []
 
         self.log('Ep: %d / %d - Time: %d sec' % (self.episode, self.episodes, episode_time) + '\t' +
-                 ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + ', Reward/time : {:.5f}'.format(avg_reward_over_time) +
+                 ' * Tot Reward : {:.5f}'.format(tot_reward) + ', Avg Reward : {:.5f}'.format(avg_reward) + (
+                 ', Success : ' + str(num_stats["success"])) +
                  (' - Avg Metrics : [' + ', '.join([str(l) for l in avg_metrics]) + ']' if len(avg_metrics)>0 else '') +
                  ' - Avg Time : {:.3f}'.format(avg_time))
         self._log_stats_to_dashboards(self.total_steps, "Train", {**tot_actors_reward, "Avg_reward": avg_reward, "Tot_reward": tot_reward, "Reward_over_time": avg_reward_over_time, "Avg_time": avg_time, **tot_env_stats, **num_stats})

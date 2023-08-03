@@ -27,7 +27,6 @@ class ReplayBuffer:
         self.rewards.append(transition[2])
         self.next_states.append(transition[3])
         self.dones.append(transition[4])
-        # TODO can I cat?
         self.additional_inputs1.append(additional_input[0])
         self.additional_inputs2.append(additional_input[1])
 
