@@ -1,4 +1,4 @@
-Qpolicy methods have the problem of non stationarity but we use communication come deterrente a questa situazione
+Q-policy methods have the problem of non stationarity but we use communication come deterrente a questa situazione
 (1) leads to learned policies that only use local information (i.e. their own observations) at execution time,
 (2) does not assume a differentiable model of the environment dynamics or any particular structure on the communication method between agents, and
 (3) is applicable not only to cooperative interaction but to competitive or mixed interaction involving both physical and communicative behavior
@@ -6,9 +6,9 @@ Qpolicy methods have the problem of non stationarity but we use communication co
 my approach focus on who hear and not who speak
 
 ## Reviewed papers
-Append the following prompt to each next request: use an accademic style of writing of a phd student in AI, be lenghty in the rephrase, maintain all concept, reorganize the concepts for readability if necessary, expand the concepts when possible, limit the use of sentence introductions like "however", maintain the citations between square brackets.
+Append the following prompt to each next request: use an academic style of writing of a phd student in AI, be lenghty in the rephrase, maintain all concept, reorganize the concepts for readability if necessary, expand the concepts when possible, limit the use of sentence introductions like "however", maintain the citations between square brackets.
 
-append the following prompt to each next request: use an accademic style of writing of a phd student in AI, be lenghty in the rephrase, maintain all concept, be technical in the responses, scientific research paper text, high fluency, UK english, reorganize the concepts for readability if necessary, expand the concepts when possible, limit the use of sentence introductions like "however", limit general knowledge and definitions, use mathematical formulation in latex if necessary, maintain the citations between square brackets
+append the following prompt to each next request: use an academic style of writing of a phd student in AI, be lenghty in the rephrase, maintain all concept, be technical in the responses, scientific research paper text, high fluency, UK english, reorganize the concepts for readability if necessary, expand the concepts when possible, limit the use of sentence introductions like "however", limit general knowledge and definitions, use mathematical formulation in latex if necessary, maintain the citations between square brackets
 
 ### (summary)
 - **Multiagent Learning: Basics, Challenges, and Prospects**
@@ -53,14 +53,14 @@ that can vary depending on the state
 ### (3)
 - **MAVEN: Multi-Agent Variational Exploration** 
 face MARL problem of inefficient exploration and says that through committed exploration we can solve that. "Maintain a policy and overtime that will lead to better rewards".
-use a variable fixed per episode extracted from a latent space and a dopt a hierarchical approach. It has the aim to improve QMIX algorithm and escape suboptimal convergence in MARL. Centralized trainining with decentralized execution (CTDE def https://arxiv.org/pdf/1905.05408.pdf)
+use a variable fixed per episode extracted from a latent space and a dopt a hierarchical approach. It has the aim to improve QMIX algorithm and escape suboptimal convergence in MARL. Centralized training with decentralized execution (CTDE def https://arxiv.org/pdf/1905.05408.pdf)
 
 ### (3)
 - **Multi-Agent Actor-Critic for Mixed Cooperative-Competitive Environments**    ++++similar aim
 Aim of counteract the problem of high variance with many agents of policy gradient methods by using an ensamble of policies.
 MADDPG: Local actor use local info to deal with competition and cooperation (CTDE) while centralized critic has actions also about other agents. The action is communicated or got from inference of policy (communication of obs in this case)
 the inference is an alternative to communicate the action?
-BAD: to handle different objective of agents (like competitors can get different reward structures for a same obs) the critic is per agent. To perform well in both coop/mixed env (be more robust and not overrfit) use an ensamble of policies selecting which one to use to perform well and is costly.
+BAD: to handle different objective of agents (like competitors can get different reward structures for a same obs) the critic is per agent. To perform well in both coop/mixed env (be more robust and not overfit) use an ensamble of policies selecting which one to use to perform well and is costly.
 The Multi-Agent Deep Deterministic Policy Gradient (MADDPG) model presented by Lowe et al. (2017) also tries to achieve similar goals. However, they differ in the way of providing the coordination signal. In their case, there is no direct communication among agents (actors with different policy per agent), instead a different centralized critic per agent – which can access the actions of all the agents – provides the signal. Concurrently, a similar model using centralized critic and decentralized actors with additional counterfactual reward, COMA by Foerster et al. (2018) was proposed to tackle the challenge of multiagent credit assignment by letting agents know their individual contributions.
 
 ### (3)
@@ -75,7 +75,7 @@ Approach similar to QMIX but instead use a dueling network where the value estim
 - **Communication and interaction in a multi-agent system devised for transport brokering**
 Brokering of structured messages from agents which want to realize their own goals. They claim for the necessity of a common language
 RQ: How should messages be generated, transmitted and represented? How can the content of messages be standardised? What principles (e.g. concepts, mechanisms and patterns) can be used?
-BAD: they claim that to understand each other standardised and well structured messages are needed. They use a template to comunicate in their MAS environment.
+BAD: they claim that to understand each other standardised and well structured messages are needed. They use a template to communicate in their MAS environment.
 
 ### (4)
 - **Event-Based Set-Membership Leader-Following Consensus of Networked Multi-Agent Systems Subject to Limited Communication Resources and Unknown-But-Bounded Noise**
@@ -93,12 +93,12 @@ GOOD: They use a two tier communication (ACL main channel encapsulate a backchan
 
 ### (4)
 - **Communication Efficiency in Multi-Agent Systems**
-Talk about ACL message format for communication and how these can be integrated in a robotic context in a way to have bettr efficency. Use a second channel of communication called backchannel. It is interesting for the discussion about the necessity of a structure in the message which can be contrapposta all'uso di un messaggio in the continue space.
+Talk about ACL message format for communication and how these can be integrated in a robotic context in a way to have bettr efficency. Use a second channel of communication called backchannel. It is interesting for the discussion about the necessity of a structure in the message which can be contrapposta all'uso di un message in the continue space.
 
 ### (4)
 - **When2com - Multi-Agent Perception via Communication Graph Grouping**
 RQ: learning to construct communication groups and learning when to communicate in a bandwidth-limited way
-Focus on the efficiency of communication (make groups no broadcast) by making direct handshaking with others and using a matching function to determine the correlation between information known by the agents (potentially to transfer) and an attention module, to decide when and with whom comunicate. In the specific it address the multiagent collaborative perception problem, where an agent is able to improve its perception by receiving information from other agents.  
+Focus on the efficiency of communication (make groups no broadcast) by making direct handshaking with others and using a matching function to determine the correlation between information known by the agents (potentially to transfer) and an attention module, to decide when and with whom communicate. In the specific it address the multiagent collaborative perception problem, where an agent is able to improve its perception by receiving information from other agents.  
 
 ### (4)
 - **ACCNet: Actor-Coordinator-Critic Net for “Learning-to-Communicate” with Deep Multi-agent Reinforcement Learning**
@@ -117,7 +117,7 @@ They claim that discrete performance of communication is lower than continuos (a
 
 ### (4)
 - **Learning Individually Inferred Communication for Multi-Agent Cooperation**
-Learn with who you want to talk to reduce the overhead of communication in a collaborative setting. This is applicable to case where we have a critic centralized (join action-value), therefore it can be used also to reduce the communication in other appraoches like TarMac. They propose a two phase training in which the environment and network of action is trained first (or with whatever pre-trained CTDE algorithm) then the proposed netowrk of prior for communication is learnt after.
+Learn with who you want to talk to reduce the overhead of communication in a collaborative setting. This is applicable to case where we have a critic centralized (join action-value), therefore it can be used also to reduce the communication in other appraoches like TarMac. They propose a two phase training in which the environment and network of action is trained first (or with whatever pre-trained CTDE algorithm) then the proposed network of prior for communication is learnt after.
 BAD: each agent has to know who is around him in order to decide who speak with
 
 ### (4)
@@ -138,7 +138,7 @@ Double attention mechanism self and external to acquire only interesting message
 
 ### (5)
 - **Communication Efficiency in Multi-Agent Systems**
-Talk about ACL message format for communication and how these can be integrated in a robotic context in a way to have bettr efficency. Use a second channel of communication called backchannel. It is interesting for the discussion about the necessity of a structure in the message which can be contrapposta all'uso di un messaggio in the continue space.
+Talk about ACL message format for communication and how these can be integrated in a robotic context in a way to have better efficency. Use a second channel of communication called backchannel. It is interesting for the discussion about the necessity of a structure in the message which can be contrapposta all'uso di un messaggio in the continue space.
 
 ### (5)
 - **Adversarial Attacks On Multi-Agent Communication**
