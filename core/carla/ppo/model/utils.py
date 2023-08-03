@@ -17,8 +17,8 @@ class AddBias(nn.Module):
         return x + bias
 
 
-def init(module, weight_init, bias_init, gain=1):
-    weight_init(module.weight.data, gain=gain)
+def init(module, weight_init, bias_init):
+    weight_init(module.weight.data)
     bias_init(module.bias.data)
     return module
 

@@ -63,8 +63,9 @@ class PredatorPrey(gym.Env):
         self._agent_view_range = agent_view_range
 
         self.action_space = MultiAgentActionSpace([spaces.Discrete(5) for _ in range(self.n_agents)])
-        self.agent_pos = {_: None for _ in range(self.n_agents)}
-        self.prey_pos = {_: None for _ in range(self.n_preys)}
+        self.agent_ids = [str(a) for a in range(self.n_agents)]
+        self.agent_pos = {}
+        self.prey_pos = {}
         self._prey_alive = None
 
         self._full_obs = self.__create_grid()
@@ -74,8 +75,8 @@ class PredatorPrey(gym.Env):
         self.full_observable = full_observable
 
         mask_size = np.prod(self._agent_view_range)
-        self._obs_high = np.array([1., 1.] + [1.] * mask_size * 2, dtype=np.float32)
-        self._obs_low = np.array([0., 0.] + [0.] * mask_size * 2, dtype=np.float32)
+        self._obs_high = np.array([1., 1.] + [1.] * mask_size * 3, dtype=np.float32)
+        self._obs_low = np.array([0., 0.] + [0.] * mask_size * 3, dtype=np.float32)
         if self.full_observable:
             self._obs_high = np.tile(self._obs_high, self.n_agents)
             self._obs_low = np.tile(self._obs_low, self.n_agents)
@@ -128,8 +129,8 @@ class PredatorPrey(gym.Env):
         self._full_obs = self.__create_grid()
 
         while True:
-            pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
-                   self.np_random.randint(0, self._grid_shape[1] - 1)]
+            pos = [np.random.randint(0, self._grid_shape[0] - 1),
+                   np.random.randint(0, self._grid_shape[1] - 1)]
             if self._is_cell_preyless(pos) and not self._wall_exists(pos):
                 break
         for agent_i in range(self.n_agents):
@@ -138,8 +139,8 @@ class PredatorPrey(gym.Env):
 
         for prey_i in range(self.n_preys):
             while True:
-                pos = [self.np_random.randint(0, self._grid_shape[0] - 1),
-                       self.np_random.randint(0, self._grid_shape[1] - 1)]
+                pos = [np.random.randint(0, self._grid_shape[0] - 1),
+                       np.random.randint(0, self._grid_shape[1] - 1)]
                 if self._is_cell_agentless(pos) and not self._wall_exists(pos):
                     self.prey_pos[prey_i] = pos
                     break
@@ -158,19 +159,21 @@ class PredatorPrey(gym.Env):
             y_m = math.floor(self._agent_view_range[1]/2)
             _prey_pos = np.zeros(self._agent_view_range)  # prey location in neighbour
             _agent_pos = np.zeros(self._agent_view_range)  # other agents location in neighbour
+            _obstacle_pos = np.zeros(self._agent_view_range)  # other agents location in neighbour
 
             for i, col in enumerate(range(pos[0] - x_m, pos[0] + x_m + 1)):
                 for j, row in enumerate(range(pos[1] - y_m, pos[1] + y_m + 1)):
                     if not self.is_valid((col, row)) or self._wall_exists((col, row)):
-                        _prey_pos[i, j] = _agent_pos[i, j] = -1
+                        _obstacle_pos[i, j] = 1
                         continue
                     if self._full_obs[PREY][col][row] > 0:
-                        _prey_pos[i, j] = self._full_obs[PREY][col][row]  # get relative position for the prey loc.
+                        _prey_pos[i, j] = min(1, self._full_obs[PREY][col][row])  # get relative position for the prey loc.
                     if self._full_obs[AGENT][col][row] > (1 if pos == [col, row] else 0):
-                        _agent_pos[i, j] = self._full_obs[AGENT][col][row]
+                        _agent_pos[i, j] = min(1, self._full_obs[AGENT][col][row])
 
             _agent_i_obs += _prey_pos.flatten().tolist()  # adding prey pos in observable area
             _agent_i_obs += _agent_pos.flatten().tolist()  # adding prey pos in observable area
+            _agent_i_obs += _obstacle_pos.flatten().tolist()  # adding prey pos in observable area
             # _agent_i_obs += [self._step_count / self._max_steps]  # adding time
             _obs.append(_agent_i_obs)
 
@@ -179,7 +182,7 @@ class PredatorPrey(gym.Env):
             _obs = [_obs for _ in range(self.n_agents)]
         return _obs
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self._total_episode_reward = [0 for _ in range(self.n_agents)]
         self.agent_pos = {}
         self.prey_pos = {}
@@ -190,7 +193,7 @@ class PredatorPrey(gym.Env):
         self._agent_dones = [False for _ in range(self.n_agents)]
         self._prey_alive = [True for _ in range(self.n_preys)]
 
-        return self.get_agent_obs()
+        return self.get_agent_obs(), {}
 
     def _wall_exists(self, pos):
         return self._full_obs[WALL][pos[0]][pos[1]] == 1
@@ -304,7 +307,7 @@ class PredatorPrey(gym.Env):
 
                 prey_move = None
                 if self._prey_alive[prey_i]:
-                    prey_move = self.np_random.choice(len(self._prey_move_probs), 1, p=self._prey_move_probs)[0]
+                    prey_move = np.random.choice(len(self._prey_move_probs), 1, p=self._prey_move_probs)[0]
                 self.__update_prey_pos(prey_i, prey_move)
 
         if (self._step_count >= self._max_steps) or (True not in self._prey_alive):
@@ -347,9 +350,19 @@ class PredatorPrey(gym.Env):
         assert (self._step_count is not None), \
             "Call reset before using render method."
 
+        def __get_neighbour_coordinates( pos, area):
+            x, y = pos
+            neighbours = []
+            for i in range(-area, area + 1):
+                for j in range(-area, area + 1):
+                    if (i == 0 and j == 0) or not self.is_valid((x + i, y + j)):
+                        continue
+                    neighbours.append((x + i, y + j))
+            return neighbours
+
         img = copy.copy(self._base_img)
         for agent_i in range(self.n_agents):
-            for neighbour in self.__get_neighbour_coordinates(self.agent_pos[agent_i]):
+            for neighbour in __get_neighbour_coordinates(self.agent_pos[agent_i], 2):
                 if self._full_obs[WALL][neighbour[0]][neighbour[1]] == 0:
                     fill_cell(img, neighbour, cell_size=CELL_SIZE, fill=AGENT_NEIGHBORHOOD_COLOR, margin=0.1)
             fill_cell(img, self.agent_pos[agent_i], cell_size=CELL_SIZE, fill=AGENT_NEIGHBORHOOD_COLOR, margin=0.1)
@@ -376,8 +389,7 @@ class PredatorPrey(gym.Env):
             return self.viewer.isopen
 
     def seed(self, n=None):
-        self.np_random, seed = seeding.np_random(n)
-        return [seed]
+        np.random.seed(n)
 
     def close(self):
         if self.viewer is not None:

@@ -28,6 +28,8 @@ class Switch(gym.Env):
         self._total_episode_reward = None
         self._add_clock = clock
         self._agent_dones = None
+        self.agent_ids = [str(a) for a in range(self.n_agents)]
+        self.agent_pos = {}
 
         self.action_space = MultiAgentActionSpace([spaces.Discrete(5) for _ in range(self.n_agents)])  # l,r,t,d,noop
 
@@ -125,12 +127,13 @@ class Switch(gym.Env):
 
         return _obs
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self.__init_full_obs()
         self._step_count = 0
         self._agent_dones = [False for _ in range(self.n_agents)]
         self._total_episode_reward = [0 for _ in range(self.n_agents)]
-        return self.get_agent_obs()
+
+        return self.get_agent_obs(), {}
 
     def __wall_exists(self, pos):
         col, row = pos
