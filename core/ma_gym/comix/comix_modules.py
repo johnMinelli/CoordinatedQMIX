@@ -5,7 +5,6 @@ from core.carla.ppo.model.utils import init, init_normc_
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class Flatten(nn.Module):
@@ -53,7 +52,7 @@ class FCProc(nn.Module):
         super(FCProc, self).__init__()
 
         self._hidden_size = hidden_size
-        self.init_fc = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
+        self.init_fc = lambda m: init(m, lambda x: nn.init.kaiming_normal_(x, nonlinearity='relu'), lambda x: nn.init.constant_(x, 0))
 
         if size == 0:
             self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, self._hidden_size*4)),
@@ -61,12 +60,12 @@ class FCProc(nn.Module):
                                     self.init_fc(nn.Linear(self._hidden_size*4, self._hidden_size*2)),
                                     nn.ReLU(),
                                     self.init_fc(nn.Linear(self._hidden_size*2, self._hidden_size)),
-                                    nn.Tanh())
+                                    nn.ReLU())
         else:
             self.fc_backbone = nn.Sequential(self.init_fc(nn.Linear(img_num_features, self._hidden_size*2)),
                                     nn.ReLU(),
                                     self.init_fc(nn.Linear(self._hidden_size*2, self._hidden_size)),
-                                    nn.Tanh())
+                                    nn.ReLU())
 
     def forward(self, img):
         return self.fc_backbone(img)
@@ -181,14 +180,14 @@ class Coordinator(nn.Module):
         self.plan_size = plan_size
         self.recurrent_size = coord_recurrent_size
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
-        _init_fc_ortho = lambda m: init(m, nn.init.orthogonal_, lambda x: nn.init.constant_(x, 0))
+        _init_fc = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0))
 
         self.global_coord_net = _to_ma(RecurrentHead, (self.plan_size*2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # it takes as input seq [[self, other],...]
         self.boolean_coordinator = nn.ModuleList([
             nn.Sequential(
-                _init_fc_ortho(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 since it takes the bidirectional hxs of global_coord_net
-                nn.ReLU(),
-                _init_fc_ortho(nn.Linear(coord_recurrent_size, 2))
+                _init_fc(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 since it takes the bidirectional hxs of global_coord_net
+                nn.Tanh(),
+                _init_fc(nn.Linear(coord_recurrent_size, 2))
             ) for id in agents_ids])
 
     def to(self, device):
@@ -209,7 +208,7 @@ class Coordinator(nn.Module):
         # The coordination part is detached from the rest: it produces only the boolean coord_masks
         glob_rnn_hxs = []
         coord_masks = []
-        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch in case of a batch sample with no comm (e.g. for t=0 case) # NOTE serve solo da mettere dati a caso per non dover filtrare il batch.  
+        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch in case of a batch sample with no comm (e.g. for t=0 case)
         glob_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
         for i in range(self.num_agents):
             # if not torch.any(plans[:,i]): continue  # agent done

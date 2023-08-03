@@ -96,6 +96,7 @@ class CoordQMixGymAgent(BaseAgent):
             self.lambda_coord = opt.lambda_coord
             self.lambda_q = opt.lambda_q/self.chunk_size
             self.tau = opt.tau
+            self.rew_threshold = opt.rew_threshold
             self.coord_loss = torch.zeros(1, device=device)
             self.loss_coordinator = torch.zeros(1, device=device)
             self.ae_loss = torch.zeros(1, device=device)
@@ -153,10 +154,11 @@ class CoordQMixGymAgent(BaseAgent):
         return epoch + 1
 
     def _soft_update(self):
-        for param_target, param in zip(self.q_policy_target.get_policy_parameters(), self.q_policy.get_policy_parameters()):
-            param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
-        for param_target, param in zip(self.mix_net_target.parameters(), self.mix_net.parameters()):
-            param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
+        # for param_target, param in zip(self.q_policy_target.get_policy_parameters(), self.q_policy.get_policy_parameters()):
+        #     param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
+        # for param_target, param in zip(self.mix_net_target.parameters(), self.mix_net.parameters()):
+        #     param_target.data.copy_((param_target.data * (1.0 - self.tau)) + (param.data * self.tau))
+        pass
 
     def take_action(self, observation, hidden, dones, prev_intents=None, comm_delays=None):
         observation = observation.unsqueeze(0)
@@ -179,30 +181,33 @@ class CoordQMixGymAgent(BaseAgent):
                 # optimize the coordinator while acting using the max q differences given by a mask respect its inverse
                 dones_mask = dones_mask.squeeze(-1)
                 max_q_a = q_out.max(dim=-1)[0] * dones_mask
-                coord_masks = coord_masks.transpose(2, 0)  # F.softmax(coord_masks.transpose(2, 0), dim=-1)
+                coord_masks = coord_masks.transpose(2, 0)
                 w = self.mix_net_target.eval_states((observation*dones_mask.unsqueeze(-1))+(-1*(~dones_mask.unsqueeze(-1).bool()))).detach()
                 if self.q_policy.eval_coord_mask == "optout":
                     max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask.unsqueeze(-1) * dones_mask.unsqueeze(-2)
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w.unsqueeze(2), -1)
                     pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
-                    self.loss_coordinator += torch.sum(torch.sum(
+                    loss = torch.sum(torch.sum(
                         nn.ReLU()(inv_pred_q_s - pred_q_s.unsqueeze(-1).expand(max_inv_q_a.shape)).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1))
                 else:
                     max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w, -1)
                     pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
-                    self.loss_coordinator += torch.sum(torch.sum(torch.sum(
+                    loss = torch.sum(torch.sum(torch.sum(
                         nn.ReLU()(inv_pred_q_s - pred_q_s).unsqueeze(-1).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1), -1) / self.n_agents)
 
-                self.coord_updates += self.coord_K_epochs
-                if self.coord_updates >= 1:
-                    self.optimizer_coordinator.zero_grad()
-                    (self.loss_coordinator * self.coord_K_epochs).backward()
-                    self.optimizer_coordinator.step()
-                    self.coord_loss += self.loss_coordinator
-                    self.coord_stats.update({"no": (coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1]).sum().item(), "yes": (coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1]).sum().item(), "good": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0).sum().item(), "bad": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))>0).sum().item(), "agree": (inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum().item()})
-                    self.coord_updates -= 1
-                    self.loss_coordinator = torch.zeros(1, device=self.loss_coordinator.device)
+                if loss > self.rew_threshold:
+                    self.loss_coordinator += loss
+                    self.coord_updates += self.coord_K_epochs
+
+                    if self.coord_updates >= 1:
+                        self.optimizer_coordinator.zero_grad()
+                        self.loss_coordinator.backward()
+                        self.optimizer_coordinator.step()
+                        self.coord_loss += self.loss_coordinator
+                        self.coord_stats.update({"no": (coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1]).sum().item(), "yes": (coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1]).sum().item(), "good": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0).sum().item(), "bad": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))>0).sum().item(), "agree": (inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum().item()})
+                        self.coord_updates -= 1
+                        self.loss_coordinator = torch.zeros(1, device=self.loss_coordinator.device)
 
             # optimize the ae while acting
             if ae_training:
@@ -277,9 +282,12 @@ class CoordQMixGymAgent(BaseAgent):
         return num_updates, losses
 
     def update_target_net(self):
-        # self.q_policy_target.load_state_dict(self.q_policy.state_dict())
-        # self.mix_net_target.load_state_dict(self.mix_net.state_dict())
-        # print('Target networks updated')
+        self.q_policy_target.input_processor.load_state_dict(self.q_policy.input_processor.state_dict())
+        self.q_policy_target.ma_q.load_state_dict(self.q_policy.ma_q.state_dict())
+        self.q_policy_target.intent_extractor.load_state_dict(self.q_policy.intent_extractor.state_dict())
+        self.q_policy_target.co_q_linear.load_state_dict(self.q_policy.co_q_linear.state_dict())
+        self.mix_net_target.load_state_dict(self.mix_net.state_dict())
+        print('Target networks updated')
         pass
 
     def update_learning_rate(self):

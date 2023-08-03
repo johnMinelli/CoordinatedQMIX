@@ -44,14 +44,7 @@ class BaseOptions():
         self.parser.add_argument('--name', type=str, default='experiment_name', help='Name of the experiment. It decides where to store results and models')
         self.parser.add_argument('--seed', type=int, default=0, help='Seed for random functions, and network initialization')
         self.parser.add_argument('--gpu_ids', type=str, default='0,1', help='GPU ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
-        self.parser.add_argument('--env', default='pursuit', choices=['CoMix_pursuit4', 'CoMix_pursuit8',  'CoMix_pursuit16', 'pursuit_dev', 'predator_prey_dev', 'CoMix_switch', 'switch_dev', 'checkers'], help='Name of the environment (default: %(default)s)')
-
-        # model
-        self.parser.add_argument('-s', '--save_path', type=str, default='./save', help='Checkpoints are saved here')
-        self.parser.add_argument('-as', '--agent_save_interval', type=positive_int, default=5, required=False, help='The save interval for the trained agent (default %(default)s), in episodes.')
-        self.parser.add_argument('-vi', '--agent_valid_interval', type=positive_int, default=5, required=False, help='The eval interval for the trained agent (default %(default)s), in episodes.')
-        self.parser.add_argument('--load_path', type=str, required=False, default=None, help='Path where to search the trained agents to be loaded (default `save_path`/models.')
-        self.parser.add_argument('--load_agent', type=int, required=False, default=None, help='Label of a trained solver agent to be loaded from `load_path` (default %(default)s). -1 to load the last saved model in the folder.')
+        self.parser.add_argument('--env', default='CoMix_switch', choices=['CoMix_switch', 'CoMix_predator_prey_4', 'CoMix_predator_prey_8', 'CoMix_predator_prey_16', 'CoMix_transport_1','CoMix_transport_2','CoMix_transport_4','CoMix_drones', 'switch_dev', 'predator_prey_dev', 'transport_dev'], help='Name of the environment (default: %(default)s)')
         self.parser.add_argument('--agent', type=str, required=False, default="comix", help='Label of a trained solver agent to be loaded from `load_path` (default %(default)s). -1 to load the last saved model in the folder.')
 
         # log

@@ -1,3 +1,5 @@
+import torch.nn.functional as F
+
 from core.ma_gym.comix.comix_modules import *
 
 
@@ -85,7 +87,7 @@ class QPolicy(nn.Module):
 
         # setup network modules
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
-        _init_fc_norm = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0))
+        _init_fc = lambda m: init(m, lambda x: nn.init.kaiming_normal_(x, nonlinearity='relu'), lambda x: nn.init.constant_(x, 0))
 
         # (1) preprocess input to extract relevant features (shared)
         if self.cnn_input_proc:
@@ -110,23 +112,15 @@ class QPolicy(nn.Module):
         # Produce the coordination mask
         self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size)
         # Coordinated Q network to `slightly` adjust your decisions
-        self.co_q_net = _to_ma(nn.GRUCell, (self.plan_size, self.hidden_size_t2), {})
-        self.intent_extractor = nn.Sequential(_init_fc_norm(nn.Linear(self.plan_size, self.hidden_size_t2)),
+        self.intent_extractor = nn.Sequential(_init_fc(nn.Linear(self.plan_size, self.hidden_size_t2)),
                                               nn.ReLU(),
-                                              _init_fc_norm(nn.Linear(self.hidden_size_t2, self.hidden_size_t2)))
+                                              _init_fc(nn.Linear(self.hidden_size_t2, self.hidden_size_t2)))
         self.co_q_linear = nn.ModuleList([
-            nn.Sequential(_init_fc_norm(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
+            nn.Sequential(_init_fc(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
                           nn.ReLU(),
-                          _init_fc_norm(nn.Linear(self.hidden_size_t2, action_space[id].n)),
+                          _init_fc(nn.Linear(self.hidden_size_t2, action_space[id].n)),
                           nn.Sigmoid()
             ) for id in agents_ids])
-
-        # w init
-        for name, param in self.co_q_net.named_parameters():
-            if 'bias' in name:
-                nn.init.constant_(param, 0)
-            elif 'weight' in name:
-                nn.init.orthogonal_(param)
 
     def get_coordinator_parameters(self):
         coordinator_net_params = []
@@ -211,7 +205,7 @@ class QPolicy(nn.Module):
     #         action_logits_coord = action_logits[:, i].clone()
     #         if not torch.equal(rnn_hxs, hiddens[:, i]):
     #             action_logits_coord[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)] += self.co_q_linear[i](rnn_hxs[torch.any((rnn_hxs-hiddens[:, i]).detach(),-1)])
-    #         q_values.append(action_logits_coord.unsqueeze(1))  # NOTE to make it work il mio hidden deve essere abbastanza informativo da poter inferire gli action_logits precedentemente emessi e di conseguenza con la q una modifica a questi... se non funziona mettere tutto nella q
+    #         q_values.append(action_logits_coord.unsqueeze(1))  # NOTE to make it work my hidden vector should be enough informative to allow inference of solo action_logitsand so modify this previous output
     #     q_values = torch.cat(q_values, dim=1)
     # 
     #     return q_values
@@ -246,14 +240,17 @@ class QPolicy(nn.Module):
             # apply coordination mask to intents
             bs, n = intents.shape[:2]
             masked_intents = masks.permute((2, 0, 1, 3)) * (~torch.eye(n, dtype=torch.bool, device=self._device)).repeat(bs, 1, 1).unsqueeze(-1) * intents.clone()
-            # sum over agents dimension
-            masked_intents = masked_intents.mean(-2)  # TODO
+
             q_values = []
-            for i, id in enumerate(self.agents_ids):
+            for i in range(self.num_agents):
                 action_logits_coord = action_logits[:, i].clone()
-                if torch.any(masked_intents[:, i]):
+                # sum over agents dimension
+                batch_mask = masked_intents[:, i].any(-1).sum(-1)>0
+                if torch.any(batch_mask):
                     rnn_hxs = hiddens[:, i].clone()
-                    action_logits_coord *= 1+self.co_q_linear[i](torch.cat([rnn_hxs, masked_intents[:, i]], -1))
+                    masked_intents_a = masked_intents[:, i][batch_mask].sum(-2) / masked_intents[:, i][batch_mask].any(-1).sum(-1).unsqueeze(-1)  # zero div if no comm
+                    action_logits_coord[batch_mask] = action_logits_coord[batch_mask] * \
+                        (1+self.co_q_linear[i](torch.cat([rnn_hxs[batch_mask], masked_intents_a], -1)))
                 q_values.append(action_logits_coord.unsqueeze(1))
             q_values = torch.cat(q_values, dim=1)
             return q_values
@@ -321,7 +318,7 @@ class QPolicy(nn.Module):
         if rec_intents is not None:
             intents[comm_ts_delays>0] = rec_intents[comm_ts_delays>0]
         temporal_delays = 1 if comm_ts_delays is None else torch.gather(self.comm_delay_factors, 0, torch.clamp(comm_ts_delays, 0, len(self.comm_delay_factors)-1).long().flatten()).view(bs, n, n, 1).to(self._device)
-        scaled_intents = intents / temporal_delays
+        scaled_intents = intents * temporal_delays
         qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, blind_coord_masks, dones_mask, train_coord)
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
