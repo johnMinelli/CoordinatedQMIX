@@ -7,10 +7,6 @@ import torch
 
 from core.base_agent import BaseAgent
 from core.ma_gym.comix.comix_agent import CoordQMixGymAgent
-from core.ma_gym.baselines.covdn_agent import CoordVDNGymAgent
-from core.ma_gym.baselines.idqn import IDQNGym
-from core.ma_gym.baselines.comaddpg_agent import CoordMADDPGGymAgent
-from core.ma_gym.baselines.qmix import QMixGym
 from envs.wrappers import MaGymEnvWrap
 from utils.logger import Logger
 
@@ -141,19 +137,7 @@ def gym_loop(args: Namespace, device: torch.device, logger: Logger):
 
     def create_agent_fn(opt: Namespace, env):
         # Choose the agent implementation
-        if args.agent == 'idqn':
-            agent = IDQNGym(opt, env, _device)
-        elif args.agent == 'vdn':
-            agent = CoordVDNGymAgent(opt, env, _device)
-        elif args.agent == 'qmix':
-            agent = QMixGym(opt, env, _device)
-        elif args.agent == 'maddpg':
-            args.gumbel_max_temp = 10
-            args.gumbel_min_temp = 0.1
-            agent = CoordMADDPGGymAgent(opt, env, _device)
-        else:
-            # my implementation
-            agent = CoordQMixGymAgent(opt, env, _device)
+        agent = CoordQMixGymAgent(opt, env, _device)
 
         return agent
 
