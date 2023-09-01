@@ -63,19 +63,16 @@ def gym_loop(args: Namespace, device: torch.device, logger: Logger):
             gym.envs.register(id='CustomSwitch4-v0', entry_point='envs.switch:Switch', kwargs=
             {'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 500})
             env = MaGymEnvWrap(gym.make("CustomSwitch4-v0"))
-            args.hi, args.hc, args.hm, args.hs = 128, 128, 32, 1
         elif args.env == "predator_prey_dev" or "CoMix_predator_prey" in args.env:
             xy, n = (14, 8) if args.env == "CoMix_predator_prey_8" else (16, 16) if args.env == "CoMix_predator_prey_16" else (12, 4)
             gym.envs.register(id='CustomPredatorPrey-v0', entry_point='envs.predator_prey:PredatorPrey', kwargs=
             {'grid_shape': (xy, xy), 'n_agents': n, 'n_preys': 16, 'prey_move_probs': (0.2, 0.2, 0.2, 0.2, 0.2), 'full_observable': False, 'penalty': 0, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (5, 5)})
             env = MaGymEnvWrap(gym.make("CustomPredatorPrey-v0"))
-            args.hi, args.hc, args.hm, args.hs = 128, 128, 32, 1
         elif args.env == "transport_dev" or "CoMix_transport" in args.env:
             n, h = (4, 2) if args.env == "CoMix_transport_2" else (8, 4) if args.env == "CoMix_transport_4" else (2, 1)
             gym.envs.register(id='CustomTransport-v0', entry_point='envs.transport:Transport', kwargs=
             {'grid_size': (16,10), 'n_agents': n, 'n_loads': h, 'full_observable': False, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (5, 5)})
             env = MaGymEnvWrap(gym.make("CustomTransport-v0"))
-            args.hi, args.hc, args.hm, args.hs = 128, 64, 32, 1
         else:
             env = gym.make(args.env)
         return env

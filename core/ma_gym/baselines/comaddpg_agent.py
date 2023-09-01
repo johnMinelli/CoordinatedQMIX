@@ -13,7 +13,7 @@ from path import Path
 from core.base_agent import BaseAgent
 from core.carla.ppo.model.utils import init
 from core.ma_gym.comix.comix_agent import QPolicy
-from core.ma_gym.roll_storage import RolloutStorage
+from core.ma_gym.memory.roll_storage import RolloutStorage
 from utils.utils import print_network, get_scheduler, mkdirs
 
 
@@ -46,7 +46,7 @@ class CriticNet(nn.Module):
         x = torch.cat((obs.reshape(batch_s, -1), action.reshape(batch_s, -1)), dim=1)
         for i in range(self.num_agents):
             q_values.append(self.critic[i](x).unsqueeze(1))
-        return torch.cat(q_values, dim=1)  # TODO
+        return torch.cat(q_values, dim=1)  # TO DO
 
 
 """Gym agent"""
@@ -153,7 +153,7 @@ class CoordMADDPGGymAgent(BaseAgent):
         self.q_policy.train() if self.training else self.q_policy.eval()
 
     def save_model(self, prefix: str = "", model_episode: int = -1):
-        """Save the model""" # TODO
+        """Save the model""" # TO DO
         save_path_c = self.backup_dir / "{}_critic_{:04}_model".format(prefix, model_episode)
         torch.save(self.critic.state_dict(), save_path_c)
         save_path_q = self.backup_dir / "{}_q_{:04}_model".format(prefix, model_episode)

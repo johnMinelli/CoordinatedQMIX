@@ -11,7 +11,7 @@ from path import Path
 from core.base_agent import BaseAgent
 from core.ma_gym.comix.comix_agent import CoordQMixGymAgent
 from core.ma_gym.comix.comix_modules import *
-from core.ma_gym.replay_buffer import ReplayBuffer
+from core.ma_gym.memory.replay_buffer import ReplayBuffer
 from utils.utils import print_network, get_scheduler, mkdirs
 
 

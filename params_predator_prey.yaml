@@ -1,0 +1,18 @@
+ae_comm: 0
+cnn_input_proc: 0
+coord_mask_type: optout
+delayed_comm: 0
+hi: 128
+hc: 128
+hm: 32
+hs: 1
+# train
+batch_size: 512
+lambda_q: 10
+min_buffer_len: 5000
+max_buffer_len: 20000
+chunk_size: 10  # 1
+update_target_interval: 40000
+K_epochs: 0.02
+coord_K_epochs: 0.02
+

@@ -10,7 +10,7 @@ import torch.optim as optim
 from gym import Env
 from path import Path
 
-from core.ma_gym.replay_buffer import ReplayBuffer
+from core.ma_gym.memory.replay_buffer import ReplayBuffer
 from utils.utils import mkdirs, get_scheduler, print_network
 
 

@@ -1,7 +1,5 @@
 ﻿import copy
 import logging
-import random
-from netrc import netrc
 
 import gym
 import math
@@ -16,12 +14,29 @@ from envs.utils.observation_space import MultiAgentObservationSpace
 
 logger = logging.getLogger(__name__)
 
+# Not used for evaluation
+
 
 class Transport(gym.Env):
+    """
+    Pairs of two agents are need to transport a laad to the other side of a map in the docking area. To do so two agents
+    should get in the opposite cardinal positions near a load and select the same action. The agents can freely move in
+    the space selecting an action ∈ {Left, Right, Up, Down, Stop} at each time step.
+    Presence of obstacles in the map make the task harder, since neither the agents nor the load can occupy the same
+    position as one obstacle. Each pair is rewarded when accomplish its task, default value is 5. An auxiliary reward
+    for decreasing the smallest distance between load-dock position is delivered to the agents, default 0.5.
+
+    Each agent’s observation includes:
+    - agent absolute coordinate position normalized to 1. e.g. [1.0,1.0] for br corner
+    - boolean array for the cells in the observation area describing the presence of obstacle.
+    e.g. [0]x(5,5) with an observation are af (5,5)
+
+    The terminating condition of this task is when all agents take their load to the docking area of after n steps.
+    """
     metadata = {'render.modes': ['human', 'rgb_array']}
 
     def __init__(self, grid_size=(16, 16), n_agents=2, n_loads=4, full_observable=False, step_cost=-0.01, dock_reward=5,
-                 max_steps=500, agent_view_range=(5, 5)):
+                 aux_reward=0.5, max_steps=500, agent_view_range=(5, 5)):
         assert len(grid_size) == 2, 'expected a tuple of size 2 for grid_shape, but found {}'.format(grid_size)
         assert len(agent_view_range) == 2, 'expected a tuple of size 2 for agent view mask,' \
                                            ' but found {}'.format(agent_view_range)
@@ -38,6 +53,7 @@ class Transport(gym.Env):
         self._steps_beyond_done = None
         self._step_cost = step_cost
         self._dock_reward = dock_reward
+        self._aux_reward = aux_reward
         self._agent_view_range = agent_view_range
         self.viewer = None
 
@@ -331,7 +347,7 @@ class Transport(gym.Env):
                                     rew = self._dock_reward
                                 else:
                                     self.__update_load_view(current_load_i)
-                                    rew = 5 if self._update_docking_distance(current_load_i) else 0
+                                    rew = self._aux_reward if self._update_docking_distance(current_load_i) else 0
 
                                 rewards[agent_1] += rew
                                 rewards[agent_2] += rew

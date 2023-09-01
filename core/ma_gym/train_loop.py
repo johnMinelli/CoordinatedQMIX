@@ -1,17 +1,15 @@
-﻿import math
-import time
+﻿
 from argparse import Namespace
 from typing import Callable
-import sys
 import gym
 import numpy as np
 import torch
 
 from core.base_agent import BaseAgent
 from core.ma_gym.comix.comix_agent import CoordQMixGymAgent
-from core.ma_gym.comix.covdn_agent import CoordVDNGymAgent
+from core.ma_gym.baselines.covdn_agent import CoordVDNGymAgent
 from core.ma_gym.baselines.idqn import IDQNGym
-from core.ma_gym.comix.comaddpg_agent import CoordMADDPGGymAgent
+from core.ma_gym.baselines.comaddpg_agent import CoordMADDPGGymAgent
 from core.ma_gym.baselines.qmix import QMixGym
 from envs.wrappers import MaGymEnvWrap
 from utils.logger import Logger
@@ -22,15 +20,10 @@ global _device
 def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Callable[[Namespace, MaGymEnvWrap], BaseAgent], logger: Logger):
     # Initialize elements
     env = env_fn()
-    test_env = env_fn()
     agents = agents_fn(opt, env)
     step = 0
 
     agents_ids = env.agents_ids
-
-    # logger.episode_start(opt.episodes-1)
-    # logger.train_step(12700, {}, {})
-    # logger.episode_stop({"rewards": {}}, {"success": 0})
 
     for episode in range(agents.start_epoch, opt.episodes):
         warmup_ended = agents.learning
@@ -47,7 +40,7 @@ def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Cal
             step += 1
             # select agent actions from observations
             actions, hxs, add_in = agents.take_action(current_state_obs, hxs, dones)
-            actions[dones.squeeze().bool()] = env.no_op  # TODO change it with None
+            actions[dones.squeeze().bool()] = env.no_op
 
             # env step
             next_state_obs, rewards_dict, dones, info = env.step(list(map(lambda a: None if dones[a[0]] else a[1][0].cpu().numpy(), enumerate(actions))))
@@ -78,11 +71,11 @@ def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Cal
             logger.episode_stop({"rewards": {k: v for k,v in zip(env.agents_ids, total_rewards)}}, {"success": env.get_success_metric()})
             agents.update_learning_rate()
 
-            # Hard update (if implemented)
+            # hard update (if implemented)
             if step >= opt.update_target_interval:
                 step = 0
                 agents.update_target_net()
-            # for comparison eval each training episode using as step the number of updates done in the training episode
+
             if episode != 0 and (episode % opt.agent_valid_interval == 0):
                 test_env = env_fn()
                 agents.switch_mode('eval')
@@ -129,23 +122,19 @@ def gym_loop(args: Namespace, device: torch.device, logger: Logger):
             gym.envs.register(id='CustomSwitch4-v0', entry_point='envs.switch:Switch', kwargs=
             {'n_agents': 4, 'full_observable': False, 'step_cost': 0.0, 'max_steps': 500})
             env = MaGymEnvWrap(gym.make("CustomSwitch4-v0"))
-            args.rew_threshold = 0.01
-            args.min_buffer_len, args.max_buffer_len, args.chunk_size, args.lambda_q, args.update_target_interval = 1000, 20000, 1, 10, 40000
+            args.q_threshold = 0.01  # threshold of optimization: make the coordinator more/less sensible to small Q changes
         elif args.env == "predator_prey_dev" or "CoMix_predator_prey" in args.env:
             xy, n = (14, 8) if args.env == "CoMix_predator_prey_8" else (16, 16) if args.env == "CoMix_predator_prey_16" else (12, 4)
             gym.envs.register(id='CustomPredatorPrey-v0', entry_point='envs.predator_prey:PredatorPrey', kwargs=
             {'grid_shape': (xy, xy), 'n_agents': n, 'n_preys': 16, 'prey_move_probs': (0.2, 0.2, 0.2, 0.2, 0.2), 'full_observable': False, 'penalty': 0, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (5, 5)})
             env = MaGymEnvWrap(gym.make("CustomPredatorPrey-v0"))
-            args.rew_threshold = 0.001
-            args.min_buffer_len, args.max_buffer_len, args.chunk_size, args.chunk_size, args.update_target_interval, args.hc = 5000, 20000, 10, 1, 40000, 128
+            args.q_threshold = 0.001
         elif args.env == "transport_dev" or "CoMix_transport" in args.env:
             n, h = (4, 2) if args.env == "CoMix_transport_2" else (8, 4) if args.env == "CoMix_transport_4" else (2, 1)
             gym.envs.register(id='CustomTransport-v0', entry_point='envs.transport:Transport', kwargs=
             {'grid_size': (16,10), 'n_agents': n, 'n_loads': h, 'full_observable': False, 'step_cost': 0, 'max_steps': 500, 'agent_view_range': (5, 5)})
             env = MaGymEnvWrap(gym.make("CustomTransport-v0"))
-            args.rew_threshold = 0.01
-            args.min_buffer_len, args.max_buffer_len, args.chunk_size, args.hc = 5000, 10000, 1, 64
-            args.lambda_q, args.update_target_interval = (10, 20000) if n == 2 else (15, 30000) if n == 4 else (20, 40000)
+            args.q_threshold = 0.01
         else:
             env = gym.make(args.env)
         return env

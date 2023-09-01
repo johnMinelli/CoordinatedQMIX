@@ -16,6 +16,9 @@ from utils.logger import Logger
 global _device
 
 
+# cmd = "nvidia-docker run --rm -e NVIDIA_VISIBLE_DEVICES={} -p {}-{}:2000-2002 {} /bin/bash -c \"sed -i '5i sync' ./CarlaUE4.sh; ./CarlaUE4.sh /Game/Maps/Town01 -carla-server -benchmark -fps=10 -carla-settings=\"CarlaSettings.ini\"\"".format(
+#     gpu_id, port, port + 2, args.image_name)
+
 def preprocess(obs, actors_coords, rnn_hxs, comm_mask, done_mask, avg_comm=True):
     """
     The communication matrix built has the following logic:

@@ -20,7 +20,6 @@ class Logger(object):
         s = 10
         e = 1  # episode bar position
         tr = 3  # train bar position
-        ts = 6  # valid bar position
         h = 100
 
         self.progress_bar = None

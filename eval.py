@@ -41,7 +41,6 @@ def main(args):
     gym_loop(args, device, logger)
 
 
-
 if __name__ == '__main__':
     # Get arguments
     parser_config = EvalOptions().parse()
