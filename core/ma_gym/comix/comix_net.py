@@ -261,7 +261,7 @@ class QPolicy(nn.Module):
         # produce mask of coordination using incoming messages
         if coord_masks is None:
             coord_masks, glob_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, glob_rnn_hxs)
-            dones_mask = torch.cat([dones_mask, torch.ones((dones_mask.size(0),self.num_agents_dummy-dones_mask.size(1), *dones_mask.shape[2:]), device=dones_mask.device)], dim=1)
+            dones_mask = torch.cat([dones_mask, torch.ones((dones_mask.size(0), self.num_agents_dummy-dones_mask.size(1), *dones_mask.shape[2:]), device=dones_mask.device)], dim=1)
             done_matrix = (dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0))[:self.num_agents]
             if self.training:  # mask here is for `coord_masks` output variable
                 coord_masks = F.gumbel_softmax(coord_masks, hard=True, dim=-1) * done_matrix.unsqueeze(-1)  # add randomness proportional to logits relative value
