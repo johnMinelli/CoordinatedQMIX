@@ -2,13 +2,12 @@ import glob
 import os
 from argparse import Namespace
 
-import torch
 import torch.optim as optim
 from gym import Env
 from path import Path
 
 from core.base_agent import BaseAgent
-from core.ma_gym.memory.roll_storage import RolloutStorage
+from core.ma_gym.utils.roll_storage import RolloutStorage
 from core.ma_gym.comix.comix_net import *
 from utils.utils import print_network, get_scheduler, mkdirs
 

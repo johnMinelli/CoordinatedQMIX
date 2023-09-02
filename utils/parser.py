@@ -46,7 +46,7 @@ class BaseOptions():
         self.parser.add_argument('--name', type=str, default='experiment_name', help='Name of the experiment. It decides where to store results and models')
         self.parser.add_argument('--seed', type=int, default=0, help='Seed for random functions, and network initialization')
         self.parser.add_argument('--gpu_ids', type=str, default='0,1', help='GPU ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
-        self.parser.add_argument('--env', default=None, choices=['CoMix_switch', 'CoMix_predator_prey_4', 'CoMix_predator_prey_8', 'CoMix_predator_prey_16', 'CoMix_transport_1','CoMix_transport_2','CoMix_transport_4','CoMix_drones', 'switch_dev', 'predator_prey_dev', 'transport_dev'], help='Name of the environment (default: %(default)s)')
+        self.parser.add_argument('--env', default=None, required=True, choices=['CoMix_switch', 'CoMix_predator_prey_4', 'CoMix_predator_prey_8', 'CoMix_predator_prey_16', 'CoMix_transport_1','CoMix_transport_2','CoMix_transport_4','CoMix_drones', 'switch_dev', 'predator_prey_dev', 'transport_dev'], help='Name of the environment (default: %(default)s)')
         self.parser.add_argument('--agent', type=str, required=False, default="comix", help='Label of a trained solver agent to be loaded from `load_path` (default %(default)s). -1 to load the last saved model in the folder.')
 
         # log
