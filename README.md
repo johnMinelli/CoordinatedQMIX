@@ -1,22 +1,31 @@
-# Learning a communication which incentive coordination
+# MARL Coordination with QMIX
+<!--- Mixed multi agent reinforcement learning for autonomous driving in CARLA -->
 
-#### CARLA Traffic control with comunicating agents
-#### Traffic control for multi agent autonomous driving
+Official repository for *"CoMIX: A Multi-agent Reinforcement Learning Training Architecture for Efficient Decentralized Coordination and Independent Decision Making"* [[ArXiv](https://arxiv.org/abs/2308.10721)]
+
+## Project structure
+- `core` folders contains both ppo implementation used to act in Carla environment using [carla-gym](https://github.com/johnMinelli/carla-gym/) wrapper and official implementation of CoMix used for testing in simple multi agents environments.
+- `baseline` folder contains algorithms from the literature as testing bed for our method and attempts of implementation of our approach in others CTDE frameworks.
+- `envs` contains environments used for test and evaluation, partially reimplemented starting from [ma-gym repository](https://github.com/koulanurag/ma-gym)
 
 ## Usage
-To train 
+Default parameters are loaded for each environment in automatic through the params_{env_name}.yaml config file if exists. Otherwise a custom configuration can be loaded specifying the file path in `--yaml_params` parameter or specifying individual parameters in the command line.
+
+To train
 
 ```
-python train.py
+python train.py --env CoMix_switch
 ```
+(fine tuning procedure explained in the paper, can be executed using `--fine_tune 1` and modifying the Q optimizer parameters)
 
 To evaluate:
 ```
-python eval.py  --load_path ./eval/
+python eval.py --models_path save --model_epoch -1
 ```
 
+Detailed commands for testing:
 
-train (switch)	`--name switch_no_coord --render_mode human --env CoMix_switch --gpu_ids -1 --coord_mask_type optout --batch_size 511 -ep 2000 --hi 128 --hc 64 --hm 32 --hs 1 --lambda_q 10 --seed -1`
+train (switch)	`--name switch_no_coord --render_mode human --env CoMix_switch --gpu_ids -1 --coord_mask_type optout --batch_size 512 -ep 2000 --hi 128 --hc 64 --hm 32 --hs 1 --lambda_q 10 --seed -1`
 
 train (pp4)	`--name pp_4 --render_mode none --env CoMix_predator_prey_4 --gpu_ids -1 -vi 5 -ve 1 --coord_mask_type optout --batch_size 512 -ep 5000 --coord_K_epochs 0.02 --K_epochs 0.02 --hi 128 --hc 128 --hm 32 --hs 1 --lr_co 0.00005 --lr_q 0.0001 --wandb --update_target_interval 40000 --chunk_size 10 --seed -1`
 
