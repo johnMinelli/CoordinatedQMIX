@@ -12,6 +12,7 @@ from core.ma_gym.memory.roll_storage import RolloutStorage
 from core.ma_gym.comix.comix_net import *
 from utils.utils import print_network, get_scheduler, mkdirs
 
+DEBUG = True
 
 """Gym agent for all agents in the environment"""
 class CoordQMixGymAgent(BaseAgent):
