@@ -30,14 +30,14 @@ class CoordQMixGymAgent(BaseAgent):
         self.q_policy_target = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.model_params).to(device)
         self.q_policy_target.load_state_dict(self.q_policy.state_dict())
         # no need of having a target for mask predictor module
-        self.q_policy_target.ma_coordinator.global_coord_net = self.q_policy.ma_coordinator.global_coord_net
-        self.q_policy_target.ma_coordinator.boolean_coordinator = self.q_policy.ma_coordinator.boolean_coordinator
+        self.q_policy_target.ma_coordinator.coord_net_modules = self.q_policy.ma_coordinator.coord_net_modules
+        self.q_policy_target.ma_coordinator.bool_coord_modules = self.q_policy.ma_coordinator.bool_coord_modules
         # central policy version
         self.central_q_policy = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.model_params).to(device)
         self.central_q_policy_target = QPolicy(env.agents_ids, env.observation_space, env.action_space, model_params=self.model_params).to(device)
         self.central_q_policy_target.load_state_dict(self.q_policy.state_dict())
-        self.central_q_policy_target.ma_coordinator.global_coord_net = self.q_policy.ma_coordinator.global_coord_net
-        self.central_q_policy_target.ma_coordinator.boolean_coordinator = self.q_policy.ma_coordinator.boolean_coordinator
+        self.central_q_policy_target.ma_coordinator.coord_net_modules = self.q_policy.ma_coordinator.coord_net_modules
+        self.central_q_policy_target.ma_coordinator.bool_coord_modules = self.q_policy.ma_coordinator.bool_coord_modules
 
         self.mix_net = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"]).to(device)
         self.mix_net_target = QMixer(env.observation_space, hidden_size=self.mixer_params["hidden_size"]).to(device)

@@ -61,7 +61,7 @@ class BaseOptions():
         self.parser.add_argument('-r', '--render_mode', default='human', required=False, type=str.lower, choices=['human', 'human_val', 'none'], help='Modality of rendering of the environment.')
 
         self.parser.add_argument('-ep', '--episodes', type=positive_int, default=2000, required=False, help='The episodes to run the training procedure (default %(default)s).')
-        self.parser.add_argument('-ve', '--val_episodes', type=positive_int, default=1, required=False, help='The episodes to run the validation procedure (default %(default)s).')
+        self.parser.add_argument('-ve', '--val_episodes', type=positive_int, default=10, required=False, help='The episodes to run the validation procedure (default %(default)s).')
 
         self.isTrain = False
         self.initialized = True
@@ -103,7 +103,7 @@ class BaseOptions():
             mkdirs(self.opt.backup_dir)
         else:
             self.opt.models_path = Path(self.opt.models_path) / self.opt.name
-        # load mdoel parameters from yaml
+        # load model parameters from yaml
         if self.opt.yaml_params is None:
             self.opt.yaml_params = "params_{0}.yaml".format(re.sub(r'^(.*?)_dev$|^CoMix_(.*?)_?\d*$', r'\1\2', self.opt.env))
         if os.path.exists(self.opt.yaml_params):
@@ -119,7 +119,7 @@ class TrainOptions(BaseOptions):
 
         self.parser.add_argument('-s', '--save_path', type=str, default='./save', help='Checkpoints are saved here')
         self.parser.add_argument('-as', '--agent_save_interval', type=positive_int, default=5, required=False, help='The save interval for the trained agent (default %(default)s), in episodes.')
-        self.parser.add_argument('-vi', '--agent_valid_interval', type=positive_int, default=5, required=False, help='The eval interval for the trained agent (default %(default)s), in episodes.')
+        self.parser.add_argument('-vi', '--agent_valid_interval', type=positive_int, default=10, required=False, help='The eval interval for the trained agent (default %(default)s), in episodes.')
         self.parser.add_argument('--load_path', type=str, required=False, default=None, help='Path where to search the trained agents to be loaded (default `save_path`/models.')
         self.parser.add_argument('--continue_train', type=int, default=None, help='continue training: if set to -1 load the latest model from save_path')
 
@@ -130,13 +130,14 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--min_buffer_len', type=positive_int, default=2000, required=False, help='The number of necessary samples in the buffer for training (default %(default)s).')
         self.parser.add_argument('--max_buffer_len', type=positive_int, default=20000, required=False, help='The maximum number of samples in the buffer for training (default %(default)s).')
 
-        self.parser.add_argument('-opt', '--optimizer', type=str.lower, default='adam', required=False, choices=['adam', 'rmsprop', 'sgd', 'adagrad', 'adadelta', 'adamax'], help='The optimizer to be used. (default %(default)s).')
+        self.parser.add_argument('-opt', '--optimizer', type=str.lower, default='rmsprop', required=False, choices=['adam', 'rmsprop', 'sgd', 'adagrad', 'adadelta', 'adamax'], help='The optimizer to be used. (default %(default)s).')
+        self.parser.add_argument('--lr', type=positive_float, default=0.0005, help='initial learning rate')
         self.parser.add_argument('--lr_q', type=positive_float, default=0.0001, help='initial learning rate')
         self.parser.add_argument('--lr_co', type=positive_float, default=0.00005, help='initial learning rate')
         self.parser.add_argument('--lr_ae', type=positive_float, default=0.0001, help='initial learning rate')
-        self.parser.add_argument('--lr_niter_frozen', type=int, default=1000, help='[lr_policy=lambda] # of iter at starting learning rate')
+        self.parser.add_argument('--lr_niter_frozen', type=int, default=1000000, help='[lr_policy=lambda] # of iter at starting learning rate')
         self.parser.add_argument('--lr_niter_decay', type=int, default=3000, help='[lr_policy=lambda] # of iter to linearly decay learning rate to zero')
-        self.parser.add_argument('--lr_weight_decay', '-wd', type=float, default=0.001, required=False, help='The value of weight decay regularizer for Q optimizer (default %(default)s).')
+        self.parser.add_argument('--lr_weight_decay', '-wd', type=float, default=0.00001, required=False, help='The value of weight decay regularizer for Q optimizer (default %(default)s).')
         self.parser.add_argument('--lr_beta1', type=positive_float, default=0.9, required=False, help='The beta 1 for the optimizer (default %(default)s).')
         self.parser.add_argument('--lr_beta2', type=positive_float, default=0.999, required=False, help='The beta 2 for the optimizer (default %(default)s).')
         self.parser.add_argument('--lr_rho', type=positive_float, default=0.95, required=False, help='The rho for the optimizer (default %(default)s).')
@@ -145,7 +146,7 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--lr_policy', type=str, default='lambda', help='learning rate policy: lambda|step|plateau')
         self.parser.add_argument('--lr_decay_every', type=int, default=100, help='[lr_policy=step] multiply by a gamma by lr_decay_every iterations')
         self.parser.add_argument('--gamma', type=positive_float, default=0.99, required=False, help='The discount factor of PPO advantage (default %(default)s).')  # Q LEARNING discount rate
-        self.parser.add_argument('--update_target_interval', type=int, default=40000, required=False, help='Hard update the target network every many backprop steps (default %(default)s).')
+        self.parser.add_argument('--update_target_interval', type=int, default=200, required=False, help='Hard update the target network every many backprop steps (default %(default)s).')
         self.parser.add_argument('--tau', type=float, default=0.005, required=False, help='Soft update the target network at given rate (default %(default)s).')
         self.parser.add_argument('--cnn_input_proc', type=int, default=0, required=False, help='Use or not a CNN based feature extractor (default %(default)s).')
         self.parser.add_argument('--fine_tune', type=int, default=0, required=False, help='Train with a disrupted communication channel (default %(default)s).')
@@ -153,11 +154,16 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--ae_comm', type=int, default=0, required=False, help='Use the autoencoder for the message communication channel (default %(default)s).')
         self.parser.add_argument('--lambda_coord', type=positive_float, default=1, required=False, help='Weight for coordinator loss (default %(default)s).')
         self.parser.add_argument('--lambda_q', type=positive_float, default=1, required=False, help='Weight for Q network loss (default %(default)s).')
-        self.parser.add_argument('--grad_clip_norm', type=int, default=5, required=False, help='Clip the gradient in norm 2 up to a certain value (default %(default)s).')
+        self.parser.add_argument('--grad_clip_norm', type=int, default=10, required=False, help='Clip the gradient in norm 2 up to a certain value (default %(default)s).')
         self.parser.add_argument('--hi', type=int, default=128, required=False, help='Hidden size value input layer (default %(default)s).')
         self.parser.add_argument('--hs', type=int, default=1, required=False, help='Hidden type feature extractor (default %(default)s).')
         self.parser.add_argument('--hc', type=int, default=128, required=False, help='Hidden size coordinator (default %(default)s).')
         self.parser.add_argument('--hm', type=int, default=32, required=False, help='Hidden size mixer (default %(default)s).')
+        self.parser.add_argument('--norm_layer', type=positive_float, default=0, required=False, help='Whether use a normalization layer in the policy architecture (default %(default)s).')
+        
+        # layer_norm, mean/sum, hm: 32,64,128, hs: 32,64,128, hi: 32,64,128, 
+        
+        # batch_size: 8,16,32,512, coord_K_epochs: 0.02,0.005,0.1,1, K_epochs: 0.02,0.005,0.1,1, chunk_size:1,2,10,50, update_target_interval: 5000,10000,20000,50000, optimizer:adam,rmsprop, lr_weight_decay: 0.01,0.001,0.0001,0.00001,
 
         self.isTrain = True
 
