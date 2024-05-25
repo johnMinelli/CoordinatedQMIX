@@ -13,7 +13,7 @@ global _device
 global best_result
 
 
-def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Callable[[Namespace, MaGymEnvWrap], BaseAgent], logger: Logger, delay=0):
+def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Callable[[Namespace, MaGymEnvWrap], BaseAgent], logger: Logger, max_delay=0):
     # Initialize elements
     test_env = env_fn()
     agents = agents_fn(opt, test_env)
@@ -23,7 +23,6 @@ def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Cal
     logger.valid_start()
     for episode in range(opt.val_episodes):
         total_rewards = np.zeros(test_env.n_agents)
-        max_delay = delay
         hxs = agents.init_hidden()
         comm = None
         delays = torch.zeros(test_env.n_agents,test_env.n_agents).to(_device)

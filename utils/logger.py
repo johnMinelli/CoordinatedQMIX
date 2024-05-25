@@ -14,7 +14,7 @@ class Logger(object):
         self.print_freq = terminal_print_freq
         self.tensorboard = tensorboard
         self.wandb = wand
-        self.total_steps = 0
+        self.total_steps = 0 if not self.wandb else wandb.run.starting_step
         self.episode_start(None)
 
         s = 10
