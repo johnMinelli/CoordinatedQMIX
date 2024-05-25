@@ -49,6 +49,24 @@ def get_scheduler(optimizer, opt, last_epoch):
         return NotImplementedError('learning rate policy [%s] is not implemented', opt.lr_policy)
     return scheduler
 
+def worker(env_fn, child_conn):
+    """
+    Worker function that runs a single environment instance.
+    """
+    parent_conn, env = env_fn()
+    while True:
+        cmd, data = child_conn.recv()
+        if cmd == 'step':
+            obs, reward, done, info = env.step(data)
+            child_conn.send((obs, reward, done, info))
+        elif cmd == 'reset':
+            obs, info = env.reset()
+            child_conn.send((obs, info))
+        elif cmd == 'close':
+            child_conn.close()
+            break
+        else:
+            raise ValueError(f'Unknown command: {cmd}')
 
 def print_network(net):
     num_params = 0

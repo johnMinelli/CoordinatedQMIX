@@ -1,3 +1,4 @@
+import numpy as np
 import torch.nn.functional as F
 
 from core.ma_gym.comix.comix_modules import *
@@ -56,7 +57,7 @@ class QMixer(nn.Module):
 
 class QPolicy(nn.Module):
     """
-    Directly predict n values to sample from a learnt distribution: Categorical if Discrete action space else Gaussian
+    Policy implementation for multi-agent. Directly predict n values to sample from a learnt distribution: Categorical if Discrete action space else Gaussian
     The output size is dependent to the action size of the environment
 
     It evaluates in every call a single timestep of the environment, therefore for sequences, multiple calls have to be
@@ -68,6 +69,7 @@ class QPolicy(nn.Module):
             model_params = {}
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
+        self.num_agents_dummy = model_params.get("num_dummy_agents", 0)
         self.agents_ids = agents_ids
         self.obs_shape = list(observation_space.values())[0].shape
         self.obs_size = np.prod(self.obs_shape)
@@ -108,18 +110,22 @@ class QPolicy(nn.Module):
         self.plan_size = self.num_agents+self.comm_size  # agent one_hot identifier + hidden + action one_hot
 
         # Q network to take decisions independently of others
-        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size_t1)
+        self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size_t1, ln=model_params.get("norm_layer", False))
         # Produce the coordination mask
-        self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size)
+        self.ma_coordinator = Coordinator(self.agents_ids, self.num_agents_dummy, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size, ln=model_params.get("norm_layer", False))
         # Coordinated Q network to `slightly` adjust your decisions
-        self.intent_extractor = nn.Sequential(_init_fc(nn.Linear(self.plan_size, self.hidden_size_t2)),
-                                              nn.ReLU(),
-                                              _init_fc(nn.Linear(self.hidden_size_t2, self.hidden_size_t2)))
+        self.intent_extractor = nn.ModuleList([
+            nn.Sequential(
+                _init_fc(nn.Linear(self.plan_size, self.hidden_size_t2)),
+                nn.ReLU(),
+                _init_fc(nn.Linear(self.hidden_size_t2, self.hidden_size_t2))
+            ) for id in agents_ids])
         self.co_q_linear = nn.ModuleList([
-            nn.Sequential(_init_fc(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
-                          nn.ReLU(),
-                          _init_fc(nn.Linear(self.hidden_size_t2, action_space[id].n)),
-                          nn.Sigmoid()
+            nn.Sequential(
+                _init_fc(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
+                nn.ReLU(),
+                _init_fc(nn.Linear(self.hidden_size_t2, action_space[id].n)),
+                nn.Sigmoid()
             ) for id in agents_ids])
 
     def get_coordinator_parameters(self):
@@ -182,7 +188,7 @@ class QPolicy(nn.Module):
             else:
                 proc_comm = comm
         else:
-            # (**) pass the entire obs already preprocessed by feature extractor (to not explode the computation time)
+            # (**) pass the obs already preprocessed by feature extractor (to not explode the computation time)
             # this is also possible since the shared input processor relaxation
             proc_comm = comm
         return proc_comm
@@ -229,7 +235,7 @@ class QPolicy(nn.Module):
 
         return q_values, inverse_q_values
 
-    def forward(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, rec_intents=None, comm_ts_delays=None, train_coord=False, train_ae=False):
+    def forward(self, state, rnn_hxs, coord_rnn_hxs, dones_mask, comm_plans=None, coord_masks=None, rec_intents=None, comm_ts_delays=None, train_coord=False, train_ae=False):
         assert not train_coord or train_coord and (comm_plans is None and coord_masks is None), "The arguments combination passed do not match a std wanted behaviour."
         assert not (comm_plans is None and coord_masks is None) or (comm_plans is None and coord_masks is None), "The arguments combination passed is not valid."
 
@@ -254,50 +260,51 @@ class QPolicy(nn.Module):
         # retrieve incoming messages: are the current timestep communicated plans
         comm_msgs = current_plans
 
-        # process incoming messages from others. Also, they need to be masked with dones
+        # process incoming messages from others and mask them by dones
         proc_comm = (self._decode_msgs(comm_msgs) if comm_plans is None else comm_plans) * dones_mask
 
         # produce mask of coordination using incoming messages
         if coord_masks is None:
-            coord_masks, glob_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, glob_rnn_hxs)
-            done_matrix = dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0)
-            if self.training:  # mask here is for `coord_masks` output variable
-                coord_masks = F.gumbel_softmax(coord_masks, hard=True, dim=-1) * done_matrix.unsqueeze(-1)  # add randomness proportional to logits relative value
-            blind_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord, 1=coord
+            coord_masks, coord_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, coord_rnn_hxs)
+            dones_mask = torch.cat([dones_mask, torch.ones((dones_mask.size(0),self.num_agents_dummy-dones_mask.size(1), *dones_mask.shape[2:]), device=dones_mask.device)], dim=1)
+            done_matrix = (dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0))[:self.num_agents]
+            greedy_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord, 1=coord
+            if self.training:  # `coord_masks` output variable to use for training 
+                coord_masks = F.softmin(coord_masks, dim=-1) * done_matrix.unsqueeze(-1)
         else:
-            blind_coord_masks = coord_masks.permute(1,2,0,3)
+            greedy_coord_masks = coord_masks.permute(1,2,0,3)
 
         # extract intentions from messages and following the coordination mask use them to update the q values
-        intents = self.intent_extractor(proc_comm.unsqueeze(1).repeat((1, n, 1, 1)))
+        intents = torch.stack([self.intent_extractor[i](proc_comm) for i in range(self.num_agents)], 1)
         if rec_intents is not None:
             intents[comm_ts_delays>0] = rec_intents[comm_ts_delays>0]
-        temporal_delays = 1 if comm_ts_delays is None else torch.gather(self.comm_delay_factors, 0, torch.clamp(comm_ts_delays, 0, len(self.comm_delay_factors)-1).long().flatten()).view(bs, n, n, 1).to(self._device)
+        temporal_delays = 1 if (comm_ts_delays is None or torch.all(comm_ts_delays==0)) else torch.gather(self.comm_delay_factors, 0, torch.clamp(comm_ts_delays, 0, len(self.comm_delay_factors)-1).long().flatten()).view(bs, n, n, 1).to(self._device)
         scaled_intents = intents * temporal_delays
-        qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, blind_coord_masks, dones_mask, train_coord)
+        qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, greedy_coord_masks[:,:self.num_agents], dones_mask[:,:self.num_agents], train_coord)
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
-        return qs, rnn_hxs, glob_rnn_hxs, inv_qs, coord_masks, (proc_comm, blind_coord_masks.permute(2,0,1,3), intents), ae_loss
+        return qs, rnn_hxs, coord_rnn_hxs, inv_qs, coord_masks, (proc_comm, greedy_coord_masks.permute(2, 0, 1, 3), intents), ae_loss
 
-    def sample_action_from_qs(self, qs):
+    def sample_action_from_qs(self, qs, temperature=1):
         """Compute the probability distribution from Q values and sample to obtain the action."""
         # pack batch and agents and sample the distributions
         batch_size, n_agents, _ = qs.shape
-        action = torch.multinomial(torch.softmax(qs, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
+        action = torch.multinomial(torch.softmax(qs/temperature, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
         return action
 
-    def take_action(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, prev_intents=None, comm_delays=None):
+    def take_action(self, state, rnn_hxs, coord_rnn_hxs, dones_mask, prev_intents=None, comm_delays=None, temperature=1):
         """Predict Qs and from those sample an action."""
-        qs, rnn_hxs, glob_rnn_hxs, _, _, additional_input, _ = self.forward(state, rnn_hxs, glob_rnn_hxs, dones_mask, rec_intents=prev_intents, comm_ts_delays=comm_delays)
+        qs, rnn_hxs, coord_rnn_hxs, _, _, additional_input, _ = self.forward(state, rnn_hxs, coord_rnn_hxs, dones_mask, rec_intents=prev_intents, comm_ts_delays=comm_delays)
         # sample action to use in the env from q
-        action = self.sample_action_from_qs(qs)
+        action = self.sample_action_from_qs(qs, temperature)
         intents = additional_input[-1]
-        return action.detach(), rnn_hxs.detach(), glob_rnn_hxs.detach(), intents.detach()
+        return action.detach(), rnn_hxs.detach(), coord_rnn_hxs.detach(), intents.detach()
 
-    def eval_action(self, state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
+    def eval_action(self, state, rnn_hxs, coord_rnn_hxs, dones_mask, comm_plans, coord_masks, actions):
         """Off policy call returning Q of given actions."""
         bs, n = state.shape[:2]
         delays = None if not self.delayed_comm else torch.multinomial(self.comm_delays_probs, num_samples=bs * n * n, replacement=True)
-        qs, rnn_hxs, glob_rnn_hxs, _, _, _, _ = self.forward(state, rnn_hxs, glob_rnn_hxs, dones_mask, comm_plans, coord_masks, comm_ts_delays=delays)
+        qs, rnn_hxs, coord_rnn_hxs, _, _, _, _ = self.forward(state, rnn_hxs, coord_rnn_hxs, dones_mask, comm_plans, coord_masks, comm_ts_delays=delays)
         # gather q of action passed
         q_a = qs.gather(-1, actions.long()).squeeze(-1)
-        return q_a, rnn_hxs, glob_rnn_hxs
+        return q_a, rnn_hxs, coord_rnn_hxs

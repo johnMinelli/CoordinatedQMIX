@@ -1,4 +1,3 @@
-import numpy as np
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from core.ma_gym.utils.utils import init
@@ -67,8 +66,8 @@ class FCProc(nn.Module):
                                     self.init_fc(nn.Linear(self._hidden_size*2, self._hidden_size)),
                                     nn.ReLU())
 
-    def forward(self, img):
-        return self.fc_backbone(img)
+    def forward(self, state):
+        return self.fc_backbone(state)
 
 
 class EncoderDecoder(nn.Module):
@@ -105,17 +104,20 @@ class EncoderDecoder(nn.Module):
 
 
 class QNet(nn.Module):
-    def __init__(self, agents_ids, action_space, hidden_size):
+    """Network implementation for multi-agent"""
+    def __init__(self, agents_ids, action_space, hidden_size, ln):
         super(QNet, self).__init__()
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
         self.action_space = action_space
         self.hx_size = hidden_size
+        self.use_ln = ln
         _to_ma = lambda m, args: nn.ModuleList([m(*args) for _ in range(self.num_agents)])
 
-        self.gru = _to_ma(nn.GRUCell, (self.hx_size, self.hx_size))
-        self.q = nn.ModuleList([nn.Linear(hidden_size, action_space[id].n) for id in agents_ids])
-        for name, param in self.gru.named_parameters():
+        self.gru_modules = _to_ma(nn.GRUCell, (self.hx_size, self.hx_size))
+        self.ln_modules = _to_ma(nn.LayerNorm, (self.hx_size,))
+        self.q_modules = nn.ModuleList([nn.Linear(hidden_size, action_space[id].n) for id in agents_ids])
+        for name, param in self.gru_modules.named_parameters():
             if 'bias' in name:
                 nn.init.constant_(param, 0)
             elif 'weight' in name:
@@ -131,9 +133,12 @@ class QNet(nn.Module):
         q_values = [torch.empty(batch_s, )] * self.num_agents
         next_hidden = [torch.empty(batch_s, 1, self.hx_size)] * self.num_agents
         for i in range(self.num_agents):
-            x = self.gru[i](proc_x[:,i], hidden[:, i])
+            x = self.gru_modules[i](proc_x[:, i], hidden[:, i])
             next_hidden[i] = x.unsqueeze(1)
-            q_values[i] = self.q[i](x).unsqueeze(1)
+            # x = x+proc_x[:, i]  # skip
+            if self.use_ln:
+                x = self.ln_modules[i](x)
+            q_values[i] = self.q_modules[i](x).unsqueeze(1)
         return torch.cat(q_values, dim=1), torch.cat(next_hidden, dim=1)
 
     def init_hidden(self, batch_size):
@@ -154,13 +159,19 @@ class RecurrentHead(nn.Module):
         self.train()
 
     def forward(self, x, rnn_hxs, batch_mask):
+        """Note: we don't want to the GRU to handle empty messages otw the seq in large envs would be mostly filled with 0s.
+            The packing procedure solve this problem by using batch_mask to align all sent messages to left side ignoring empty messages.
+            After the computation through the recurrent unit the scores relative a message are scattered back in the original
+            position relative to agent.
+            e.g. mask [T,F,F,T] and msgs [m0, m1, m2, m3] --> packed msgs [m0, m3, -, -] = [s0, s1, , -] --> scattered scores [s0, 0, 0, s1]
+        """
         # move `padding` (i.e. agents zeroed) at right place then cutted when packing
         compact_seq = torch.zeros_like(x)
         seq_lengths = batch_mask.sum(0)
         packed_mask = torch.arange(x.size(0)).reshape(-1, 1).to(x.device) < seq_lengths.reshape(1, -1)
         compact_seq[packed_mask, :] = x[batch_mask, :]
         # pack in sequence dimension (the number of agents)
-        packed_x = pack_padded_sequence(compact_seq, batch_mask.sum(0).cpu().numpy(), enforce_sorted=False)
+        packed_x = pack_padded_sequence(compact_seq, seq_lengths.cpu().numpy(), enforce_sorted=False)
         packed_scores, rnn_hxs = self.gru(packed_x, rnn_hxs)
         scores, _ = pad_packed_sequence(packed_scores)  # restore sequence dimension (the number of agents)
         # restore order moving padding in its place
@@ -171,22 +182,25 @@ class RecurrentHead(nn.Module):
 class Coordinator(nn.Module):
     """Depending on the result of the BiGru module the action returned by the policy
      will be used or resampled with aid of communication messages"""
-    def __init__(self, agents_ids, action_space, plan_size, coord_recurrent_size):
+    def __init__(self, agents_ids, num_dummy_agents, action_space, plan_size, coord_recurrent_size, ln):
         super(Coordinator, self).__init__()
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
+        self.num_agents_dummy = num_dummy_agents
         self.agents_ids = agents_ids
         self.action_space = action_space
         self.plan_size = plan_size
         self.recurrent_size = coord_recurrent_size
+        self.use_ln = ln
         _to_ma = lambda m, args, kwargs: nn.ModuleList([m(*args, **kwargs) for _ in range(self.num_agents)])
         _init_fc = lambda m: init(m, nn.init.xavier_normal_, lambda x: nn.init.constant_(x, 0))
 
-        self.global_coord_net = _to_ma(RecurrentHead, (self.plan_size*2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # it takes as input seq [[self, other],...]
-        self.boolean_coordinator = nn.ModuleList([
+        self.coord_net_modules = _to_ma(RecurrentHead, (self.plan_size * 2, coord_recurrent_size), {"bidirectional": True, "batch_first": False})  # it takes as input seq [[self, other],...]
+        self.ln_modules = _to_ma(nn.LayerNorm, (coord_recurrent_size*2,), {})
+        self.bool_coord_modules = nn.ModuleList([
             nn.Sequential(
-                _init_fc(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 since it takes the bidirectional hxs of global_coord_net
-                nn.Tanh(),
+                _init_fc(nn.Linear(coord_recurrent_size*2, coord_recurrent_size)),  # *2 since it takes the bidirectional hxs of coord_net_modules[i]
+                nn.ReLU(),
                 _init_fc(nn.Linear(coord_recurrent_size, 2))
             ) for id in agents_ids])
 
@@ -198,28 +212,32 @@ class Coordinator(nn.Module):
     def init_hidden(self, batch_size):
         return torch.zeros((self.num_agents, 2, batch_size, self.recurrent_size)).to(self._device)
 
-    def forward(self, plans, comm_plans, glob_hiddens):
+    def forward(self, plans, comm_plans, coord_hiddens):
         """
         :param plans: (detached) current selfish_plans as starting points
         :param comm_plans: (detached for ae / req_grad for fc) other's agents plans to mix with current selfish plans (except self comm_plan)
         :param hiddens: (req_grad) selfish hiddens
-        :param glob_hiddens: (req_grad) global hiddens (2n,n,b,h)
+        :param coord_hiddens: (req_grad) global coordinator hiddens (2n,n,b,h)
         """
         # The coordination part is detached from the rest: it produces only the boolean coord_masks
-        glob_rnn_hxs = []
+        coord_rnn_hxs = []
         coord_masks = []
-        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch in case of a batch sample with no comm (e.g. for t=0 case)
-        glob_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
+        comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch: filling comm_channel with in domain data in case of a batch sample with no comm (e.g. for t=0 case when there is a delay between msg send and reception)
+        agents_communicating_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
+        agents_communicating_batch_mask = torch.cat([agents_communicating_batch_mask, torch.ones((self.num_agents_dummy-agents_communicating_batch_mask.size(0), *agents_communicating_batch_mask.shape[1:]), device=agents_communicating_batch_mask.device)]).bool()
         for i in range(self.num_agents):
             # if not torch.any(plans[:,i]): continue  # agent done
             others_plans = torch.cat([plans[:,i].unsqueeze(1).expand(comm_plans.shape), comm_plans],-1)
             x = others_plans.transpose(0, 1)  # (n,b,h)
-            scores, rnn_hxs = self.global_coord_net[i](x, glob_hiddens[i], glob_batch_mask)
-            agent_coord_masks = self.boolean_coordinator[i](scores)
+            x = torch.cat([x, torch.randn((self.num_agents_dummy-x.size(0), *x.shape[1:]), device=agents_communicating_batch_mask.device)])
+            scores, rnn_hxs = self.coord_net_modules[i](x, coord_hiddens[i], agents_communicating_batch_mask)
+            if self.use_ln:
+                scores = self.ln_modules[i](scores)
+            agent_coord_masks = self.bool_coord_modules[i](scores)
 
-            glob_rnn_hxs.append(rnn_hxs.unsqueeze(0))
+            coord_rnn_hxs.append(rnn_hxs.unsqueeze(0))
             coord_masks.append(agent_coord_masks.unsqueeze(0))
-        glob_rnn_hxs = torch.cat(glob_rnn_hxs, dim=0)
+        coord_rnn_hxs = torch.cat(coord_rnn_hxs, dim=0)
         coord_masks = torch.cat(coord_masks, dim=0)
 
-        return coord_masks, glob_rnn_hxs
+        return coord_masks, coord_rnn_hxs

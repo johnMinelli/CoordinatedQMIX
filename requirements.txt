@@ -9,4 +9,3 @@ path
 wandb
 tensorboardx
 progressbar
-tensorboardx

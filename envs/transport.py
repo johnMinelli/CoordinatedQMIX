@@ -1,7 +1,5 @@
 import copy
 import logging
-import random
-from netrc import netrc
 
 import gym
 import math
@@ -45,6 +43,7 @@ class Transport(gym.Env):
         assert n_agents == n_loads * 2, 'The environment should be initialized with a number of agents double respect the loads'
 
         self.n_agents = n_agents
+        self.n_agents_dummy = n_agents  # + add dummy here for tests
         self.n_loads = n_loads
         self.full_observable = full_observable
         self._grid_size = grid_size
@@ -154,13 +153,12 @@ class Transport(gym.Env):
         x, y = self._grid_shape
         _grid = np.zeros((3, x, y))
         # add walls
-        n = int((self._nav_area[0][1]-self._nav_area[0][0]) * (self._nav_area[1][1]-self._nav_area[1][0]) * (0.1 if test else (np.random.randint(11)*0.01)))
+        n = int((self._nav_area[0][1]-self._nav_area[0][0]) * (self._nav_area[1][1]-self._nav_area[1][0]) * 0.1)
         for i in range(n):
             x = np.random.randint(self._nav_area[0][0], self._nav_area[0][1])
             y = np.random.randint(self._nav_area[1][0], self._nav_area[1][1])
             if not self._dock_area((x, y)):
                 _grid[WALL][x][y] = 1
-                
         return _grid
 
     def __init_world(self, test=False):
@@ -372,7 +370,6 @@ class Transport(gym.Env):
                 draw_circle(img, human_pos, cell_size=CELL_SIZE, fill=HUMAN_COLOR)
                 write_cell_text(img, text=str(load_i + 1), pos=human_pos, cell_size=CELL_SIZE, fill='white', margin=0.4)
 
-        img = np.asarray(img)
         if mode == 'rgb_array':
             return img
         elif mode == 'human':
