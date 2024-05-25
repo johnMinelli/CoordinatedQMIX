@@ -2,7 +2,6 @@ import glob
 import os
 from argparse import Namespace
 
-import torch
 import torch.optim as optim
 from gym import Env
 from path import Path
@@ -86,6 +85,7 @@ class CoordQMixGymAgent(BaseAgent):
         print_network(self.mix_net)
 
         # train cycle params
+        self.train = True
         self.no_op = env.no_op
         if self.training or self.fine_tuning:
             self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.n_agents_dummy, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
@@ -169,14 +169,14 @@ class CoordQMixGymAgent(BaseAgent):
         if comm_delays is not None: comm_delays = comm_delays.unsqueeze(0)
 
         if not self.training:
-            actions, hidden, coordinator_hidden, additional_input = self.q_policy.take_action(observation, hidden, coordinator_hidden, dones_mask, prev_intents, comm_delays)
+            actions, hidden, coordinator_hidden, additional_input = self.q_policy.take_action(observation, hidden, coordinator_hidden, dones_mask, prev_intents, comm_delays, temperature=0.1)
         else:
             # Act, then do on-policy optimization for Coordinator and Autoencoder
             coord_training = not self.fine_tuning and self.memory.size() >= self.warm_up_steps
             ae_training = not self.fine_tuning and self.q_policy.shared_comm_ae
 
             q_out, hidden, coordinator_hidden, inv_q_out, coord_masks, additional_input, ae_loss = self.q_policy(observation, hidden, coordinator_hidden, dones_mask, train_coord=coord_training, train_ae=ae_training)  # explore both actions and coordination
-            actions = self.q_policy.sample_action_from_qs(q_out)
+            actions = self.q_policy.sample_action_from_qs(q_out, temperature=1)
 
             # Optimize the coordination module while acting (avoid while Q is still dumb)
             if coord_training:
@@ -199,7 +199,7 @@ class CoordQMixGymAgent(BaseAgent):
                     loss = torch.sum(torch.sum(torch.sum(
                         nn.ReLU()(inv_pred_q_s - pred_q_s).unsqueeze(-1).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1), -1) / self.n_agents)
 
-                if loss > 0:
+                if self.train and loss > 0:
                     self.accumulate_loss_coordinator += loss
                     self.coord_updates += self.coord_K_epochs
 
@@ -208,7 +208,15 @@ class CoordQMixGymAgent(BaseAgent):
                         self.accumulate_loss_coordinator.backward()
                         self.optimizer_coordinator.step()
                         self.coord_loss += self.accumulate_loss_coordinator
-                        self.coord_stats.update({"no": (coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1]).sum().item(), "yes": (coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1]).sum().item(), "good": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0).sum().item(), "bad": ((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))>0).sum().item(), "agree": (inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum().item()})
+                        diag = (~torch.eye(self.q_policy.num_agents, dtype=bool)).int().unsqueeze(0)
+                        # communication choice resulted in best q, normalized 
+                        good_ratio = ((((inv_pred_q_s-pred_q_s.expand(inv_pred_q_s.shape))<=0)[:,:self.q_policy.num_agents]*diag).sum()/self.q_policy.num_agents/(self.q_policy.num_agents-1)).item()
+                        # messages accepted normalized 
+                        yes = (((coord_masks[:, :, :, 0]<coord_masks[:, :, :, 1])[:,:self.q_policy.num_agents]*diag).sum()/self.q_policy.num_agents/(self.q_policy.num_agents-1)).item()
+                        no = (((coord_masks[:, :, :, 0]>coord_masks[:, :, :, 1])[:,:self.q_policy.num_agents]*diag).sum()/self.q_policy.num_agents/(self.q_policy.num_agents-1)).item()
+                        # action correct independently by the communication normalized
+                        agree = ((inv_q_out.view(q_out.size(0),q_out.size(1),-1).argmax(2)%q_out.size(2) == q_out.argmax(dim=2)).sum()/self.q_policy.num_agents).item()
+                        self.coord_stats.update({ "yes": yes, "no": no, "good": good_ratio, "agree": agree})
                         if DEBUG:
                             self.coord_stats.update({p[0]: p[1].grad.norm(2).item() for p in self.q_policy.ma_coordinator.coord_net_modules.named_parameters() if "weight" in p[0] and p[1].grad is not None})
 
@@ -235,7 +243,7 @@ class CoordQMixGymAgent(BaseAgent):
         self.ae_loss, self.coord_loss = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         num_updates = 0
 
-        if self.memory.size() >= self.warm_up_steps:
+        if self.train and self.memory.size() >= self.warm_up_steps:
             self.updates += self.K_epochs
             if self.updates >= 1:
                 q_loss_epoch = 0

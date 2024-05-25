@@ -1,11 +1,9 @@
-import numpy as np
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from core.carla.ppo.model.utils import init, init_normc_
+from core.carla.ppo.model.utils import init
 
 import torch
 import torch.nn as nn
-
 
 class Flatten(nn.Module):
     def forward(self, x):

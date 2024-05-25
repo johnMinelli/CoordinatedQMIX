@@ -1,3 +1,4 @@
+import numpy as np
 import torch.nn.functional as F
 
 from core.ma_gym.comix.comix_modules import *
@@ -113,15 +114,18 @@ class QPolicy(nn.Module):
         # Produce the coordination mask
         self.ma_coordinator = Coordinator(self.agents_ids, self.num_agents_dummy, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size, ln=model_params.get("norm_layer", False))
         # Coordinated Q network to `slightly` adjust your decisions
-        self.intent_extractor = nn.ModuleList([nn.Sequential(_init_fc(nn.Linear(self.plan_size, self.hidden_size_t2)),
-                                              nn.ReLU(),
-                                              _init_fc(nn.Linear(self.hidden_size_t2, self.hidden_size_t2))
+        self.intent_extractor = nn.ModuleList([
+            nn.Sequential(
+                _init_fc(nn.Linear(self.plan_size, self.hidden_size_t2)),
+                nn.ReLU(),
+                _init_fc(nn.Linear(self.hidden_size_t2, self.hidden_size_t2))
             ) for id in agents_ids])
         self.co_q_linear = nn.ModuleList([
-            nn.Sequential(_init_fc(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
-                          nn.ReLU(),
-                          _init_fc(nn.Linear(self.hidden_size_t2, action_space[id].n)),
-                          nn.Sigmoid()
+            nn.Sequential(
+                _init_fc(nn.Linear(self.hidden_size_t1+self.hidden_size_t2, self.hidden_size_t2)),
+                nn.ReLU(),
+                _init_fc(nn.Linear(self.hidden_size_t2, action_space[id].n)),
+                nn.Sigmoid()
             ) for id in agents_ids])
 
     def get_coordinator_parameters(self):
@@ -281,18 +285,18 @@ class QPolicy(nn.Module):
         # actions from done agents are not useful in this implementation, so are dropped in the output
         return qs, rnn_hxs, coord_rnn_hxs, inv_qs, coord_masks, (proc_comm, greedy_coord_masks.permute(2, 0, 1, 3), intents), ae_loss
 
-    def sample_action_from_qs(self, qs):
+    def sample_action_from_qs(self, qs, temperature=1):
         """Compute the probability distribution from Q values and sample to obtain the action."""
         # pack batch and agents and sample the distributions
         batch_size, n_agents, _ = qs.shape
-        action = torch.multinomial(torch.softmax(qs, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
+        action = torch.multinomial(torch.softmax(qs/temperature, dim=-1).view(batch_size*n_agents, -1), 1).view(batch_size, n_agents)
         return action
 
-    def take_action(self, state, rnn_hxs, coord_rnn_hxs, dones_mask, prev_intents=None, comm_delays=None):
+    def take_action(self, state, rnn_hxs, coord_rnn_hxs, dones_mask, prev_intents=None, comm_delays=None, temperature=1):
         """Predict Qs and from those sample an action."""
         qs, rnn_hxs, coord_rnn_hxs, _, _, additional_input, _ = self.forward(state, rnn_hxs, coord_rnn_hxs, dones_mask, rec_intents=prev_intents, comm_ts_delays=comm_delays)
         # sample action to use in the env from q
-        action = self.sample_action_from_qs(qs)
+        action = self.sample_action_from_qs(qs, temperature)
         intents = additional_input[-1]
         return action.detach(), rnn_hxs.detach(), coord_rnn_hxs.detach(), intents.detach()
 
