@@ -149,7 +149,7 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--update_target_interval', type=int, default=200, required=False, help='Hard update the target network every many backprop steps (default %(default)s).')
         self.parser.add_argument('--tau', type=float, default=0.005, required=False, help='Soft update the target network at given rate (default %(default)s).')
         self.parser.add_argument('--cnn_input_proc', type=int, default=0, required=False, help='Use or not a CNN based feature extractor (default %(default)s).')
-        self.parser.add_argument('--fine_tune', type=int, default=0, required=False, help='Train with a disrupted communication channel (default %(default)s).')
+        self.parser.add_argument('--fine_tune', action='store_true', required=False, help='Train with a disrupted communication channel (default %(default)s).')
         self.parser.add_argument('--coord_mask_type', type=str.lower, default='optout', required=False, choices=['true', 'inverse', 'optout'], help='The coordination mask type to use in the loss (default %(default)s).')
         self.parser.add_argument('--ae_comm', type=int, default=0, required=False, help='Use the autoencoder for the message communication channel (default %(default)s).')
         self.parser.add_argument('--lambda_coord', type=positive_float, default=1, required=False, help='Weight for coordinator loss (default %(default)s).')
