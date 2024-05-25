@@ -47,7 +47,6 @@ class PredatorPrey(gym.Env):
 
         self._grid_shape = grid_shape
         self.n_agents = n_agents
-        self.n_agents_dummy = n_agents  # + add dummy here for tests
         self.n_preys = n_preys
         self._max_steps = max_steps
         self._step_count = None

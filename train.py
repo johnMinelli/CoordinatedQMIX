@@ -21,10 +21,9 @@ def main():
 
     # Init loggers
     if args.wandb:
-        wandb.init(group="CoMix", project="TrafficAD", entity="johnminelli")
+        wandb.init()
         # Init sweep agent configuration
         if args.sweep_id is not None: args.__dict__.update(wandb.config)
-        # args.env = "CoMix_switch"
         wandb.config.update(args.__dict__)
         wandb.log({"params": wandb.Table(data=pd.DataFrame({k: [v] for k, v in vars(args).items()}))})
     if args.tensorboard:

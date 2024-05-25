@@ -39,7 +39,6 @@ class Switch(gym.Env):
         assert 2 <= n_agents <= 4, 'Number of Agents has to be in range [2,4]'
         self._grid_shape = (7, 3)
         self.n_agents = n_agents
-        self.n_agents_dummy = n_agents  # + add dummy here for tests
         self._max_steps = max_steps
         self._step_count = None
         self._step_cost = step_cost

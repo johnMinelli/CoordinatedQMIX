@@ -15,7 +15,7 @@ global _device
 def play_loop(opt: Namespace, env_fn: Callable[[], MaGymEnvWrap], agents_fn: Callable[[Namespace, MaGymEnvWrap], BaseAgent], logger: Logger):
     # Initialize elements
     env = env_fn()
-    agents = agents_fn(opt, env)
+    agent = agents_fn(opt, env)
     step = 0
 
     agents_ids = env.agents_ids

@@ -7,9 +7,9 @@ from gym import Env
 from path import Path
 
 from core.base_agent import BaseAgent
-from core.ma_gym.memory.roll_storage import RolloutStorage
+from core.ma_gym.utils.roll_storage import RolloutStorage
 from core.ma_gym.comix.comix_net import *
-from utils.utils import print_network, get_scheduler, mkdirs
+from utils.utils import print_network, get_scheduler
 
 
 """Gym agent for all agents in the environment"""
@@ -17,7 +17,7 @@ class CoordQMixGymAgent(BaseAgent):
 
     def __init__(self, opt: Namespace, env: Env, device: torch.device):
         super().__init__(opt, env, device)
-        self.q_params = {"num_dummy_agents": env.n_agents_dummy, "eval_coord_mask": opt.coord_mask_type, "ae_comm": bool(opt.ae_comm), "hidden_size": opt.hi, "coord_recurrent_size": opt.hc, "ae_comm_size": 16, "input_proc_size": opt.hs, "norm_layer": opt.norm_layer, "cnn_input_proc": bool(opt.cnn_input_proc)}
+        self.q_params = {"eval_coord_mask": opt.coord_mask_type, "ae_comm": bool(opt.ae_comm), "hidden_size": opt.hi, "coord_recurrent_size": opt.hc, "ae_comm_size": 16, "input_proc_size": opt.hs, "norm_layer": opt.norm_layer, "cnn_input_proc": bool(opt.cnn_input_proc)}
         self.mixer_params = {"hidden_size": opt.hm}
 
         # Create multi-agent networks (stacked individually for n agents)
@@ -87,7 +87,7 @@ class CoordQMixGymAgent(BaseAgent):
         self.train = True
         self.no_op = env.no_op
         if self.training or self.fine_tuning:
-            self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.n_agents_dummy, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
+            self.memory = RolloutStorage(opt.max_buffer_len, env.n_agents, env.observation_space, env.action_space, self.q_policy.plan_size).to(device)
             self.K_epochs = opt.K_epochs
             self.coord_K_epochs = opt.coord_K_epochs
             self.batch_size = opt.batch_size
@@ -188,9 +188,8 @@ class CoordQMixGymAgent(BaseAgent):
                     max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask.unsqueeze(-1) * dones_mask.unsqueeze(-2)
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w.unsqueeze(2), -1)
                     pred_q_s = torch.mean(max_q_a.unsqueeze(-1).detach() * w, -1)
-                    inv_pred_q_s = torch.cat([inv_pred_q_s, pred_q_s.unsqueeze(1).expand((max_inv_q_a.size(0), self.q_policy.num_agents_dummy-self.q_policy.num_agents, self.q_policy.num_agents))], dim=1)
-                    loss = torch.sum(
-                        nn.ReLU()(inv_pred_q_s - pred_q_s.unsqueeze(1).expand((max_inv_q_a.size(0), self.q_policy.num_agents_dummy, self.q_policy.num_agents))) * coord_masks.max(-1)[0])
+                    loss = torch.sum(torch.sum(
+                        nn.ReLU()(inv_pred_q_s - pred_q_s.unsqueeze(-1).expand(max_inv_q_a.shape)).unsqueeze(-1).expand(coord_masks.shape) * coord_masks, -1))
                 else:
                     max_inv_q_a = inv_q_out.max(dim=-1)[0] * dones_mask
                     inv_pred_q_s = torch.mean(max_inv_q_a.unsqueeze(-1).detach() * w, -1)

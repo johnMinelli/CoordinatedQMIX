@@ -43,7 +43,6 @@ class Transport(gym.Env):
         assert n_agents == n_loads * 2, 'The environment should be initialized with a number of agents double respect the loads'
 
         self.n_agents = n_agents
-        self.n_agents_dummy = n_agents  # + add dummy here for tests
         self.n_loads = n_loads
         self.full_observable = full_observable
         self._grid_size = grid_size

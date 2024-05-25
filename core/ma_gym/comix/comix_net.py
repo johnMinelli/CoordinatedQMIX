@@ -69,7 +69,6 @@ class QPolicy(nn.Module):
             model_params = {}
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
-        self.num_agents_dummy = model_params.get("num_dummy_agents", 0)
         self.agents_ids = agents_ids
         self.obs_shape = list(observation_space.values())[0].shape
         self.obs_size = np.prod(self.obs_shape)
@@ -112,7 +111,7 @@ class QPolicy(nn.Module):
         # Q network to take decisions independently of others
         self.ma_q = QNet(self.agents_ids, self.action_space, self.hidden_size_t1, ln=model_params.get("norm_layer", False))
         # Produce the coordination mask
-        self.ma_coordinator = Coordinator(self.agents_ids, self.num_agents_dummy, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size, ln=model_params.get("norm_layer", False))
+        self.ma_coordinator = Coordinator(self.agents_ids, self.action_space, plan_size=self.plan_size, coord_recurrent_size=self.coord_recurrent_size, ln=model_params.get("norm_layer", False))
         # Coordinated Q network to `slightly` adjust your decisions
         self.intent_extractor = nn.ModuleList([
             nn.Sequential(
@@ -266,8 +265,7 @@ class QPolicy(nn.Module):
         # produce mask of coordination using incoming messages
         if coord_masks is None:
             coord_masks, coord_rnn_hxs = self.ma_coordinator(current_plans, proc_comm, coord_rnn_hxs)
-            dones_mask = torch.cat([dones_mask, torch.ones((dones_mask.size(0),self.num_agents_dummy-dones_mask.size(1), *dones_mask.shape[2:]), device=dones_mask.device)], dim=1)
-            done_matrix = (dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0))[:self.num_agents]
+            done_matrix = dones_mask.permute(1, 2, 0) * dones_mask.permute(2, 1, 0)
             greedy_coord_masks = (torch.argmax(coord_masks, -1, keepdim=True) * done_matrix.unsqueeze(-1)).bool().detach()  # argmax into bool: 0=no coord, 1=coord
             if self.training:  # `coord_masks` output variable to use for training 
                 coord_masks = F.softmin(coord_masks, dim=-1) * done_matrix.unsqueeze(-1)
@@ -280,7 +278,7 @@ class QPolicy(nn.Module):
             intents[comm_ts_delays>0] = rec_intents[comm_ts_delays>0]
         temporal_delays = 1 if (comm_ts_delays is None or torch.all(comm_ts_delays==0)) else torch.gather(self.comm_delay_factors, 0, torch.clamp(comm_ts_delays, 0, len(self.comm_delay_factors)-1).long().flatten()).view(bs, n, n, 1).to(self._device)
         scaled_intents = intents * temporal_delays
-        qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, greedy_coord_masks[:,:self.num_agents], dones_mask[:,:self.num_agents], train_coord)
+        qs, inv_qs = self._coordinate_intentions(solo_qs, rnn_hxs, scaled_intents, greedy_coord_masks, dones_mask, train_coord)
 
         # actions from done agents are not useful in this implementation, so are dropped in the output
         return qs, rnn_hxs, coord_rnn_hxs, inv_qs, coord_masks, (proc_comm, greedy_coord_masks.permute(2, 0, 1, 3), intents), ae_loss

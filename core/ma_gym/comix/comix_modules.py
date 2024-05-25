@@ -182,11 +182,10 @@ class RecurrentHead(nn.Module):
 class Coordinator(nn.Module):
     """Depending on the result of the BiGru module the action returned by the policy
      will be used or resampled with aid of communication messages"""
-    def __init__(self, agents_ids, num_dummy_agents, action_space, plan_size, coord_recurrent_size, ln):
+    def __init__(self, agents_ids, action_space, plan_size, coord_recurrent_size, ln):
         super(Coordinator, self).__init__()
         self._device = torch.device("cpu")
         self.num_agents = len(agents_ids)
-        self.num_agents_dummy = num_dummy_agents
         self.agents_ids = agents_ids
         self.action_space = action_space
         self.plan_size = plan_size
@@ -224,12 +223,10 @@ class Coordinator(nn.Module):
         coord_masks = []
         comm_plans[~torch.any(torch.any(comm_plans,-1),-1)] = plans[~torch.any(torch.any(comm_plans,-1),-1)]  # patch: filling comm_channel with in domain data in case of a batch sample with no comm (e.g. for t=0 case when there is a delay between msg send and reception)
         agents_communicating_batch_mask = torch.any(comm_plans,-1).transpose(0,1)  # (n,b)
-        agents_communicating_batch_mask = torch.cat([agents_communicating_batch_mask, torch.ones((self.num_agents_dummy-agents_communicating_batch_mask.size(0), *agents_communicating_batch_mask.shape[1:]), device=agents_communicating_batch_mask.device)]).bool()
         for i in range(self.num_agents):
             # if not torch.any(plans[:,i]): continue  # agent done
             others_plans = torch.cat([plans[:,i].unsqueeze(1).expand(comm_plans.shape), comm_plans],-1)
             x = others_plans.transpose(0, 1)  # (n,b,h)
-            x = torch.cat([x, torch.randn((self.num_agents_dummy-x.size(0), *x.shape[1:]), device=agents_communicating_batch_mask.device)])
             scores, rnn_hxs = self.coord_net_modules[i](x, coord_hiddens[i], agents_communicating_batch_mask)
             if self.use_ln:
                 scores = self.ln_modules[i](scores)

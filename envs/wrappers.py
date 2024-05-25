@@ -8,7 +8,6 @@ class MaGymEnvWrap(object):
     def __init__(self, env):
         self.env = env
         self.n_agents = env.n_agents
-        self.n_agents_dummy = env.n_agents_dummy
         self.agents_ids = env.agent_ids
         self.clock = pygame.time.Clock()
         self.observation_space = {k: self.env.observation_space[i] for i, k in enumerate(self.agents_ids)}
