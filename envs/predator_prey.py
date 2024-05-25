@@ -1,7 +1,5 @@
 import copy
 import logging
-import random
-from netrc import netrc
 
 import gym
 import math

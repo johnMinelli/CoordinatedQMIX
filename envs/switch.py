@@ -6,6 +6,7 @@ import gym
 import numpy as np
 from gym import spaces
 from gym.utils import seeding
+import statistics
 
 from envs.utils.action_space import MultiAgentActionSpace
 from envs.utils.draw import draw_grid, fill_cell, draw_cell_outline, draw_circle, write_cell_text
@@ -94,7 +95,7 @@ class Switch(gym.Env):
 
     @property
     def success(self):
-        return self._max_steps-self._step_count
+        return statistics.mean(self._total_episode_reward)
 
     def get_action_meanings(self, agent_i=None):
         if agent_i is not None:

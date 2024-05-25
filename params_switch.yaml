@@ -12,7 +12,7 @@ batch_size: 32
 lambda_q: 10
 min_buffer_len: 1000
 max_buffer_len: 20000
-chunk_size: 10
+chunk_size: 2
 update_target_interval: 100
 K_epochs: 0.02
 coord_K_epochs: 0.02
